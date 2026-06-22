@@ -1,1 +1,52 @@
-.venv
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables
+.env
+
+# Model files
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# Outputs generated during runs
+outputs/
+
+# Reports generated automatically
+reports/
+
+# Temporary files
+temp/
+tmp/
+
+# Qodo
+.qodo/
+
+# Python build files
+build/
+dist/
+*.egg-info/

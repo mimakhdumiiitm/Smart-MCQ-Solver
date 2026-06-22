@@ -1,0 +1,10 @@
+pandas 
+numpy
+scikit-learn
+nltk
+transformers
+pickle
+sklearn
+gensim
+wordcloud
+collections
