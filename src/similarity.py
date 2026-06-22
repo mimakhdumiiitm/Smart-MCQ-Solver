@@ -1,0 +1,1 @@
+print("Similarity calculations completed.")
