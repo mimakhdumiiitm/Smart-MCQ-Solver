@@ -1,10 +1,11 @@
-pandas 
+# Smart MCQ Solver - Requirements
+pandas
 numpy
 scikit-learn
 nltk
 transformers
-pickle
-sklearn
 gensim
 wordcloud
-collections
+matplotlib
+seaborn
+tqdm
