@@ -27,6 +27,7 @@ Thumbs.db
 
 # Model files
 *.pkl
+.model
 *.joblib
 *.h5
 *.pt
