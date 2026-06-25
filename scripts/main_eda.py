@@ -234,16 +234,29 @@ def step_answer_distribution(train_df: pd.DataFrame):
 # STEP 5: TF-IDF EMBEDDINGS
 # ==================================================================
 
-def step_tfidf(train_df: pd.DataFrame,
-               test_df:  pd.DataFrame):
+import os
+import joblib  # or 'import pickle' depending on how your TFIDFEmbedder.save works
+def step_tfidf(train_df: pd.DataFrame, 
+               test_df:  pd.DataFrame, 
+               pretrained_path: str = None):
     print("\n" + "=" * 50)
     print("STEP 5 : TF-IDF EMBEDDINGS")
     print("=" * 50)
 
-    # Build corpus (one string per row using all text columns)
+    # 1. Check if a pre-trained model path is provided and exists
+    if pretrained_path and os.path.exists(pretrained_path):
+        print(f"Loading pre-trained TF-IDF model from: {pretrained_path}")
+        # If your class has a built-in load method, use it:
+        tfidf_embedder = TFIDFEmbedder.load(pretrained_path) 
+        # Alternatively, if it uses standard joblib/pickle:
+        # tfidf_embedder = joblib.load(pretrained_path)
+        
+        return tfidf_embedder
+
+    # 2. If no pre-trained model is found, fall back to training it
+    print("No pre-trained model found. Fitting a new TF-IDF model...")
     corpus = build_row_corpus(train_df, TEXT_COLS, clean=True)
 
-    # Fit TF-IDF
     tfidf_embedder = TFIDFEmbedder()
     tfidf_matrix   = tfidf_embedder.fit_transform(corpus)
 
@@ -251,14 +264,14 @@ def step_tfidf(train_df: pd.DataFrame,
     print(f"Sparsity     : "
           f"{100*(1 - tfidf_matrix.nnz/np.prod(tfidf_matrix.shape)):.2f}%")
 
-    # Top features
     top_df = top_features_from_matrix(
         tfidf_matrix, tfidf_embedder.get_feature_names(), n=20
     )
     print("\nTop 10 TF-IDF Features:")
     print(top_df.head(10).to_string(index=False))
 
-    # Save model
+    # Keep this here so future runs can save it to the current working directory
+    os.makedirs("models", exist_ok=True)
     tfidf_embedder.save(os.path.join("models", "tfidf.pkl"))
 
     return tfidf_embedder
