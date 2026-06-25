@@ -8,8 +8,8 @@ import os
 # PATHS
 # ------------------------------------------------------------------
 DATA_DIR        = "data"
-OUTPUT_DIR      = "outputs"
-MODEL_DIR       = "models"
+OUTPUT_DIR      = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/"
+MODEL_DIR       = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/models/"
 
 TRAIN_PATH      = os.path.join(DATA_DIR, "/kaggle/input/competitions/smart-mcq-solver-challenge/train.csv")
 TEST_PATH       = os.path.join(DATA_DIR, "/kaggle/input/competitions/smart-mcq-solver-challenge/test.csv")
