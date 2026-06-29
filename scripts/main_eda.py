@@ -255,7 +255,7 @@ def step_tfidf(train_df, test_df):
     test_corpus = build_row_corpus(test_df, cols=TEXT_COLS)
     X_test_tfidf = embedder.transform(test_corpus)
 
-    return X_train_tfidf, X_test_tfidf, embedderr
+    return X_train_tfidf, X_test_tfidf, embedder
 
 # ==================================================================
 # STEP 6: WORD2VEC EMBEDDINGS
