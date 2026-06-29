@@ -27,8 +27,7 @@ from config.config import (
     W2V_WORKERS,
     W2V_SEED,
 )
-
-from preprocessing import clean_text
+from src.preprocessing import clean_text
 
 # ------------------------------------------------------------------
 # TF-IDF
