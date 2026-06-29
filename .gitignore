@@ -34,9 +34,6 @@ Thumbs.db
 *.pth
 *.onnx
 
-# Outputs generated during runs
-outputs/
-
 # Temporary files
 temp/
 tmp/
