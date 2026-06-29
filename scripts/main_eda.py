@@ -227,41 +227,35 @@ def step_answer_distribution(train_df: pd.DataFrame):
 def step_tfidf(train_df, test_df):
     """
     Handles TF-IDF embedding generation.
-    Checks if a saved model exists to reuse it; otherwise, fits from scratch.
+    Reuses a saved TF-IDF model if available; otherwise fits and saves a new one.
     """
-    # 1. Initialize the wrapper class shell
-    embedder = TFIDFEmbedder() 
-    
-    # 2. Check if the file can be reused from previous versions/runs using config paths
+    embedder = TFIDFEmbedder()
+
+    # Reuse TF-IDF model from previous notebook if available
     if os.path.exists(TFIDF_INPUT_PATH):
         print(f"--> Reusing saved model from Kaggle Input: {TFIDF_INPUT_PATH}")
         embedder = embedder.load(TFIDF_INPUT_PATH)
-        
-    elif os.path.exists(TFIDF_OUTPUT_PATH):
-        print(f"--> Reusing saved model from local working directory: {TFIDF_OUTPUT_PATH}")
-        embedder = embedder.load(TFIDF_OUTPUT_PATH)
-        
+
     else:
         print("--> No saved model found. Fitting vocabulary from scratch...")
-        # Build your corpus using configuration columns (TEXT_COLS)
+
         train_corpus = build_row_corpus(train_df, cols=TEXT_COLS)
-        
-        # Fit the vocabulary and save it for future versions
         embedder.fit(train_corpus)
+
         os.makedirs(MODEL_DIR, exist_ok=True)
         embedder.save(TFIDF_OUTPUT_PATH)
-    
-    # 3. Transform the dataframes into sparse matrices using the loaded/fitted embedder
+
+    # Transform train data
     print("Transforming training corpus...")
     train_corpus = build_row_corpus(train_df, cols=TEXT_COLS)
     X_train_tfidf = embedder.transform(train_corpus)
-    
+
+    # Transform test data
     print("Transforming testing corpus...")
     test_corpus = build_row_corpus(test_df, cols=TEXT_COLS)
     X_test_tfidf = embedder.transform(test_corpus)
-    
-    # Return both the transformed matrices and the embedder object itself
-    return X_train_tfidf, X_test_tfidf, embedder
+
+    return X_train_tfidf, X_test_tfidf, embedderr
 
 # ==================================================================
 # STEP 6: WORD2VEC EMBEDDINGS

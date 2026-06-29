@@ -13,10 +13,11 @@ TEST_PATH       = os.path.join(KAGGLE_COMP_DIR, "test.csv")
 SUBMISSION_PATH = os.path.join(KAGGLE_COMP_DIR, "sample_submission.csv")
 
 # Corrected Pre-trained Word2Vec Path (Removed the URL path junk)
-W2V_MODEL_PATH  = "/kaggle/input/dl-22f3001418-notebook-t22026/models/w2v.model"
+# Corrected Pre-trained Word2Vec Path (Removed the URL path junk)
+W2V_MODEL_PATH  = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/models/w2v.model"
 
 # Corrected Pre-trained TF-IDF Paths
-TFIDF_INPUT_PATH  = "/kaggle/input/dl-22f3001418-notebook-t22026/models/tfidf.pkl"
+TFIDF_INPUT_PATH  = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/models/tfidf.pkl"
 TFIDF_OUTPUT_PATH = os.path.join(MODEL_DIR, "tfidf.pkl")
 
 # ------------------------------------------------------------------
