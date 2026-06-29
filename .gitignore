@@ -37,9 +37,6 @@ Thumbs.db
 # Outputs generated during runs
 outputs/
 
-# Reports generated automatically
-reports/
-
 # Temporary files
 temp/
 tmp/
