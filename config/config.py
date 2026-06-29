@@ -1,19 +1,23 @@
-# config.py
-# Central configuration file for Smart MCQ Solver
-# Edit these values to customize behavior across all modules
-
+# updated config.py
+# Central configuration file for Smart MCQ Solver (Kaggle Dedicated)
 import os
 
-# ------------------------------------------------------------------
-# PATHS
-# ------------------------------------------------------------------
 DATA_DIR        = "data"
-OUTPUT_DIR      = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/"
-MODEL_DIR       = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/models/"
+OUTPUT_DIR      = "outputs"
+MODEL_DIR       = "models"
 
-TRAIN_PATH      = os.path.join(DATA_DIR, "/kaggle/input/competitions/smart-mcq-solver-challenge/train.csv")
-TEST_PATH       = os.path.join(DATA_DIR, "/kaggle/input/competitions/smart-mcq-solver-challenge/test.csv")
-SUBMISSION_PATH = os.path.join(DATA_DIR, "/kaggle/input/competitions/smart-mcq-solver-challenge/sample_submission.csv")
+# Corrected Kaggle Input Data Paths (removed /competitions/ if standard mount)
+KAGGLE_COMP_DIR = "/kaggle/input/competitions/smart-mcq-solver-challenge"
+TRAIN_PATH      = os.path.join(KAGGLE_COMP_DIR, "train.csv")
+TEST_PATH       = os.path.join(KAGGLE_COMP_DIR, "test.csv")
+SUBMISSION_PATH = os.path.join(KAGGLE_COMP_DIR, "sample_submission.csv")
+
+# Corrected Pre-trained Word2Vec Path (Removed the URL path junk)
+W2V_MODEL_PATH  = "/kaggle/input/dl-22f3001418-notebook-t22026/models/w2v.model"
+
+# Corrected Pre-trained TF-IDF Paths
+TFIDF_INPUT_PATH  = "/kaggle/input/dl-22f3001418-notebook-t22026/models/tfidf.pkl"
+TFIDF_OUTPUT_PATH = os.path.join(MODEL_DIR, "tfidf.pkl")
 
 # ------------------------------------------------------------------
 # COLUMN NAMES
@@ -64,5 +68,6 @@ TOP_K       = 3            # MAP@K evaluation
 PLOT_STYLE  = "seaborn-v0_8-whitegrid"
 COLORS      = ["#2E86AB", "#A23B72", "#F18F01", "#C73E1D", "#3B1F2B"]
 FIGURE_DPI  = 150
-SAVE_PLOTS  = True
-print("done")
+SAVE_PLOTS  = False
+
+print("Config loaded successfully for Kaggle Environment.")

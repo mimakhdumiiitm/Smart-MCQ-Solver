@@ -10,7 +10,7 @@ import seaborn as sns
 from collections import Counter
 from wordcloud import WordCloud
 
-from config.config import (
+from config import (
     OPTION_COLS, PLOT_STYLE, COLORS, FIGURE_DPI,
     SAVE_PLOTS, OUTPUT_DIR
 )
@@ -409,3 +409,4 @@ def plot_w2v_pca(reduced: np.ndarray,
     plt.tight_layout()
     save_figure(fig, filename)
     plt.show()
+print("done")

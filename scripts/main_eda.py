@@ -1,14 +1,7 @@
+import os
 
-# main_eda.py
 # ============================================================
 # SETUP
-# ============================================================
-
-import os
-import sys
-
-# ============================================================
-# STANDARD LIBRARIES
 # ============================================================
 
 import numpy as np
@@ -20,15 +13,17 @@ from collections import Counter
 # ============================================================
 
 from config.config import (
-    TRAIN_PATH,
-    TEST_PATH,
     TEXT_COLS,
     OPTION_COLS,
     PROMPT_COL,
     ANSWER_COL,
     TOP_K,
     RANDOM_SEED,
-    OUTPUT_DIR
+    OUTPUT_DIR,
+    TFIDF_INPUT_PATH,
+    TFIDF_OUTPUT_PATH,
+    MODEL_DIR,
+    W2V_MODEL_PATH,
 )
 
 # Create required directories
@@ -45,7 +40,7 @@ from utils.data_loader import (
     validate_dataframe,
     check_missing_values,
     fill_missing_text,
-    print_basic_stats
+    print_basic_stats,
 )
 
 # ============================================================
@@ -53,11 +48,10 @@ from utils.data_loader import (
 # ============================================================
 
 from src.preprocessing import (
-    clean_text,
     clean_dataframe,
     add_text_length_features,
     build_row_corpus,
-    build_token_sentences
+    build_token_sentences,
 )
 
 # ============================================================
@@ -67,9 +61,7 @@ from src.preprocessing import (
 from src.embeddings import (
     TFIDFEmbedder,
     Word2VecEmbedder,
-    top_features_from_matrix,
     reduce_with_pca,
-    reduce_with_svd
 )
 
 # ============================================================
@@ -81,7 +73,7 @@ from src.similarity import (
     w2v_prompt_option_similarity,
     rank_options_by_similarity,
     inter_option_similarity_matrix,
-    similarity_correct_vs_incorrect
+    similarity_correct_vs_incorrect,
 )
 
 # ============================================================
@@ -89,12 +81,9 @@ from src.similarity import (
 # ============================================================
 
 from utils.metrics import (
-    map_at_k,
     evaluation_report,
     rank_distribution,
     compare_strategies,
-    format_submission,
-    parse_predictions_series
 )
 
 # ============================================================
@@ -111,9 +100,10 @@ from utils.visualization import (
     plot_mean_similarity_per_option,
     plot_map_comparison,
     plot_rank_distribution,
-    plot_w2v_pca
+    plot_w2v_pca,
 )
 
+from gensim.models import Word2Vec
 # ============================================================
 # MAIN EDA PIPELINE STARTS HERE
 # ============================================================
@@ -233,80 +223,85 @@ def step_answer_distribution(train_df: pd.DataFrame):
 # ==================================================================
 # STEP 5: TF-IDF EMBEDDINGS
 # ==================================================================
-
-import os
-import joblib  # or 'import pickle' depending on how your TFIDFEmbedder.save works
-def step_tfidf(train_df: pd.DataFrame, 
-               test_df:  pd.DataFrame, 
-               pretrained_path: str = None):
-    print("\n" + "=" * 50)
-    print("STEP 5 : TF-IDF EMBEDDINGS")
-    print("=" * 50)
-
-    # 1. Check if a pre-trained model path is provided and exists
-    if pretrained_path and os.path.exists(pretrained_path):
-        print(f"Loading pre-trained TF-IDF model from: {pretrained_path}")
-        # If your class has a built-in load method, use it:
-        tfidf_embedder = TFIDFEmbedder.load(pretrained_path) 
-        # Alternatively, if it uses standard joblib/pickle:
-        # tfidf_embedder = joblib.load(pretrained_path)
+#step 5 modified 
+def step_tfidf(train_df, test_df):
+    """
+    Handles TF-IDF embedding generation.
+    Checks if a saved model exists to reuse it; otherwise, fits from scratch.
+    """
+    # 1. Initialize the wrapper class shell
+    embedder = TFIDFEmbedder() 
+    
+    # 2. Check if the file can be reused from previous versions/runs using config paths
+    if os.path.exists(TFIDF_INPUT_PATH):
+        print(f"--> Reusing saved model from Kaggle Input: {TFIDF_INPUT_PATH}")
+        embedder = embedder.load(TFIDF_INPUT_PATH)
         
-        return tfidf_embedder
-
-    # 2. If no pre-trained model is found, fall back to training it
-    print("No pre-trained model found. Fitting a new TF-IDF model...")
-    corpus = build_row_corpus(train_df, TEXT_COLS, clean=True)
-
-    tfidf_embedder = TFIDFEmbedder()
-    tfidf_matrix   = tfidf_embedder.fit_transform(corpus)
-
-    print(f"Matrix shape : {tfidf_matrix.shape}")
-    print(f"Sparsity     : "
-          f"{100*(1 - tfidf_matrix.nnz/np.prod(tfidf_matrix.shape)):.2f}%")
-
-    top_df = top_features_from_matrix(
-        tfidf_matrix, tfidf_embedder.get_feature_names(), n=20
-    )
-    print("\nTop 10 TF-IDF Features:")
-    print(top_df.head(10).to_string(index=False))
-
-    # Keep this here so future runs can save it to the current working directory
-    os.makedirs("models", exist_ok=True)
-    tfidf_embedder.save(os.path.join("models", "tfidf.pkl"))
-
-    return tfidf_embedder
-
+    elif os.path.exists(TFIDF_OUTPUT_PATH):
+        print(f"--> Reusing saved model from local working directory: {TFIDF_OUTPUT_PATH}")
+        embedder = embedder.load(TFIDF_OUTPUT_PATH)
+        
+    else:
+        print("--> No saved model found. Fitting vocabulary from scratch...")
+        # Build your corpus using configuration columns (TEXT_COLS)
+        train_corpus = build_row_corpus(train_df, cols=TEXT_COLS)
+        
+        # Fit the vocabulary and save it for future versions
+        embedder.fit(train_corpus)
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        embedder.save(TFIDF_OUTPUT_PATH)
+    
+    # 3. Transform the dataframes into sparse matrices using the loaded/fitted embedder
+    print("Transforming training corpus...")
+    train_corpus = build_row_corpus(train_df, cols=TEXT_COLS)
+    X_train_tfidf = embedder.transform(train_corpus)
+    
+    print("Transforming testing corpus...")
+    test_corpus = build_row_corpus(test_df, cols=TEXT_COLS)
+    X_test_tfidf = embedder.transform(test_corpus)
+    
+    # Return both the transformed matrices and the embedder object itself
+    return X_train_tfidf, X_test_tfidf, embedder
 
 # ==================================================================
 # STEP 6: WORD2VEC EMBEDDINGS
 # ==================================================================
+# step 6 - modified
+from gensim.models import Word2Vec
 
 def step_word2vec(train_df: pd.DataFrame):
     print("\n" + "=" * 50)
     print("STEP 6 : WORD2VEC EMBEDDINGS")
     print("=" * 50)
 
-    sentences = build_token_sentences(train_df, TEXT_COLS)
-    print(f"Total training sentences : {len(sentences)}")
+    # Use the clean, explicit path from your imported config module
+    saved_model_path = W2V_MODEL_PATH  
 
-    w2v_embedder = Word2VecEmbedder()
-    w2v_embedder.fit(sentences)
+    if os.path.exists(saved_model_path):
+        print(f"Found pre-saved model at: {saved_model_path}")
+        
+        w2v_embedder = Word2VecEmbedder()
+        w2v_embedder.model = Word2Vec.load(saved_model_path) 
+        
+        print(f"Word2Vec loaded successfully | vocab size : {len(w2v_embedder.model.wv)}")
+    else:
+        print("Pre-saved model not found! Falling back to training from scratch...")
+        
+        # Explicitly use config values here too 
+        sentences = build_token_sentences(train_df, TEXT_COLS) 
+        print(f"Total training sentences : {len(sentences)}")
 
-    # Similarity examples
-    test_words = ["time", "fusion", "energy", "theory"]
-    for word in test_words:
-        similar = w2v_embedder.most_similar(word, topn=3)
-        if similar:
-            print(f"  '{word}' similar to : {similar}")
+        w2v_embedder = Word2VecEmbedder()
+        w2v_embedder.fit(sentences)
+        
+        os.makedirs(MODEL_DIR, exist_ok=True) 
+        w2v_embedder.save(os.path.join(MODEL_DIR, "w2v.model")) 
 
-    # PCA visualization
+    # PCA visualization using config hyperparameters
     vocab_words = list(w2v_embedder.model.wv.key_to_index.keys())[:100]
     word_vecs   = np.array([w2v_embedder.get_word_vector(w) for w in vocab_words])
-    reduced, _  = reduce_with_pca(word_vecs, n_components=2, seed=RANDOM_SEED)
+    reduced, _  = reduce_with_pca(word_vecs, n_components=2, seed=RANDOM_SEED) #config.
     plot_w2v_pca(reduced, vocab_words, n_label=40)
-
-    # Save model
-    w2v_embedder.save(os.path.join("models", "w2v.model"))
 
     return w2v_embedder
 
