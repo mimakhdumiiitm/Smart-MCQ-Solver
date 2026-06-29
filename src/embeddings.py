@@ -13,7 +13,7 @@ from sklearn.decomposition import PCA, TruncatedSVD
 from gensim.models import Word2Vec
 from gensim.utils import simple_preprocess
 
-from config import (
+from config.config import (
     TFIDF_MAX_FEATURES,
     TFIDF_NGRAM_RANGE,
     TFIDF_MIN_DF,
