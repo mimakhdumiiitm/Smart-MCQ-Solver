@@ -1,33 +1,28 @@
 # embeddings.py
 # TF-IDF and Word2Vec embedding generation and utilities
-# embeddings.py
-# TF-IDF and Word2Vec embedding generation and utilities
-import pickle
 
+import os
+import pickle
 import numpy as np
 import pandas as pd
 
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.decomposition import PCA, TruncatedSVD
+from sklearn.decomposition           import PCA, TruncatedSVD
 
-from gensim.models import Word2Vec
-from gensim.utils import simple_preprocess
+from gensim.models  import Word2Vec
+from gensim.utils   import simple_preprocess
 
 from config.config import (
-    TFIDF_MAX_FEATURES,
-    TFIDF_NGRAM_RANGE,
-    TFIDF_MIN_DF,
-    TFIDF_MAX_DF,
-    TFIDF_SUBLINEAR_TF,
-    W2V_VECTOR_SIZE,
-    W2V_WINDOW,
-    W2V_MIN_COUNT,
-    W2V_SG,
-    W2V_EPOCHS,
-    W2V_WORKERS,
-    W2V_SEED,
+    TFIDF_MAX_FEATURES, TFIDF_NGRAM_RANGE, TFIDF_MIN_DF,
+    TFIDF_MAX_DF, TFIDF_SUBLINEAR_TF,
+    W2V_VECTOR_SIZE, W2V_WINDOW, W2V_MIN_COUNT,
+    W2V_SG, W2V_EPOCHS, W2V_WORKERS, W2V_SEED,
+    OPTION_COLS, PROMPT_COL, MODEL_DIR
 )
-from src.preprocessing import clean_text
+from .preprocessing import (
+    clean_text, build_row_corpus, build_token_sentences
+)
+
 
 # ------------------------------------------------------------------
 # TF-IDF
@@ -354,4 +349,3 @@ def reduce_with_svd(sparse_matrix,
     print(f"SVD | explained variance : "
           f"{svd.explained_variance_ratio_.sum()*100:.2f}%")
     return reduced, svd
-print("done")

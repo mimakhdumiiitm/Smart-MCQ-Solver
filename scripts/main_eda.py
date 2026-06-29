@@ -168,6 +168,26 @@ def step_preprocessing(train_df: pd.DataFrame,
     return train_df, test_df
 
 
+# ------------------------------------------------------------------
+# Save processed DataFrames as CSVs
+# ------------------------------------------------------------------
+def save_processed_dataframes(train_df: pd.DataFrame, test_df: pd.DataFrame):
+    """Save processed train/test DataFrames to OUTPUT_DIR as CSV files.
+
+    Creates the directory if it does not exist.
+    """
+    out_dir = OUTPUT_DIR
+    os.makedirs(out_dir, exist_ok=True)
+
+    train_path = os.path.join(out_dir, "train_processed.csv")
+    test_path = os.path.join(out_dir, "test_processed.csv")
+
+    train_df.to_csv(train_path, index=False)
+    test_df.to_csv(test_path, index=False)
+
+    print(f"Saved processed DataFrames to: {out_dir}")
+
+
 # ==================================================================
 # STEP 3: WORD FREQUENCY & WORD CLOUDS
 # ==================================================================
@@ -254,6 +274,12 @@ def step_tfidf(train_df, test_df):
     print("Transforming testing corpus...")
     test_corpus = build_row_corpus(test_df, cols=TEXT_COLS)
     X_test_tfidf = embedder.transform(test_corpus)
+
+    # Save processed DataFrames (creates OUTPUT_DIR if missing)
+    try:
+        save_processed_dataframes(train_df, test_df)
+    except Exception as e:
+        print(f"Warning: failed to save processed DataFrames: {e}")
 
     return X_train_tfidf, X_test_tfidf, embedder
 

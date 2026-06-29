@@ -3,8 +3,10 @@
 import os
 
 DATA_DIR        = "data"
-OUTPUT_DIR      = "outputs"
+OUTPUT_DIR      = "/kaggle/working/outputs"
 MODEL_DIR       = "/kaggle/working/models"
+
+# Directory for saving processed dataframe CSVs (changeable from one place)
 
 # Corrected Kaggle Input Data Paths (removed /competitions/ if standard mount)
 KAGGLE_COMP_DIR = "/kaggle/input/competitions/smart-mcq-solver-challenge"
