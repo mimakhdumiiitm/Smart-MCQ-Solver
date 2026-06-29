@@ -4,7 +4,7 @@ import os
 
 DATA_DIR        = "data"
 OUTPUT_DIR      = "outputs"
-MODEL_DIR       = "models"
+MODEL_DIR       = "/kaggle/working/models"
 
 # Corrected Kaggle Input Data Paths (removed /competitions/ if standard mount)
 KAGGLE_COMP_DIR = "/kaggle/input/competitions/smart-mcq-solver-challenge"
