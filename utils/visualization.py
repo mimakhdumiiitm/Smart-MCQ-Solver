@@ -10,7 +10,7 @@ import seaborn as sns
 from collections import Counter
 from wordcloud import WordCloud
 
-from config import (
+from config.config import (
     OPTION_COLS, PLOT_STYLE, COLORS, FIGURE_DPI,
     SAVE_PLOTS, OUTPUT_DIR
 )
