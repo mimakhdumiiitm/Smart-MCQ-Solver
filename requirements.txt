@@ -4,8 +4,11 @@ numpy
 scikit-learn
 nltk
 transformers
+sentence-transformers
+datasets
 gensim
 wordcloud
 matplotlib
 seaborn
 tqdm
+wandb
