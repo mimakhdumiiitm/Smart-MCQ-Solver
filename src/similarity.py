@@ -274,3 +274,68 @@ def similarity_correct_vs_incorrect(df: pd.DataFrame,
         "correct_mean"  : float(np.mean(correct_sims))   if correct_sims   else 0.0,
         "incorrect_mean": float(np.mean(incorrect_sims)) if incorrect_sims else 0.0,
     }
+
+# ------------------------------------------------------------------
+# TRANSFORMER COSINE SIMILARITY  (Milestone 2 addition)
+# ------------------------------------------------------------------
+
+def transformer_prompt_option_similarity(df: pd.DataFrame,
+                                          prompt_embeddings: np.ndarray,
+                                          option_embeddings: dict,
+                                          option_cols: list = None,
+                                          col_suffix: str   = "bert_sim"
+                                          ) -> pd.DataFrame:
+    """
+    Compute cosine similarity between pre-computed transformer
+    prompt embeddings and option embeddings.
+
+    Unlike the TF-IDF version, this works on dense numpy arrays
+    rather than sparse matrices.
+
+    Args:
+        df                : input DataFrame
+        prompt_embeddings : (n_rows, hidden_size) array
+        option_embeddings : {"A": (n_rows, hidden_size), ...}
+        option_cols       : option column labels
+        col_suffix        : prefix for new columns
+
+    Returns:
+        DataFrame with columns like bert_sim_A, bert_sim_B, ...
+
+    Usage:
+        train_df = transformer_prompt_option_similarity(
+            train_df,
+            prompt_embeddings = bert_prompt_embs,
+            option_embeddings = bert_option_embs,
+            col_suffix        = "bert_sim",
+        )
+    """
+    from sklearn.metrics.pairwise import cosine_similarity as sk_cosine
+
+    if option_cols is None:
+        from config.config import OPTION_COLS
+        option_cols = OPTION_COLS
+
+    df = df.copy()
+
+    for col in option_cols:
+        if col not in option_embeddings:
+            continue
+
+        opt_embs = option_embeddings[col]        # (n_rows, hidden)
+
+        # Vectorized row-wise cosine similarity
+        # Normalise rows then dot product
+        p_norm = prompt_embeddings / (
+            np.linalg.norm(prompt_embeddings, axis=1, keepdims=True) + 1e-9
+        )
+        o_norm = opt_embs / (
+            np.linalg.norm(opt_embs, axis=1, keepdims=True) + 1e-9
+        )
+        sims = (p_norm * o_norm).sum(axis=1)     # (n_rows,)
+
+        new_col     = f"{col_suffix}_{col}"
+        df[new_col] = sims
+        print(f"Computed {new_col} | mean={sims.mean():.4f}")
+
+    return df

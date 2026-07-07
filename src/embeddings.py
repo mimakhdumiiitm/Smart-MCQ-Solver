@@ -19,9 +19,7 @@ from config.config import (
     W2V_SG, W2V_EPOCHS, W2V_WORKERS, W2V_SEED,
     OPTION_COLS, PROMPT_COL, MODEL_DIR
 )
-from .preprocessing import (
-    clean_text, build_row_corpus, build_token_sentences
-)
+from .preprocessing import clean_text
 
 
 # ------------------------------------------------------------------

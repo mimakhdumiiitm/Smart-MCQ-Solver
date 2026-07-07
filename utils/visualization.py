@@ -12,7 +12,7 @@ from wordcloud import WordCloud
 
 from config.config import (
     OPTION_COLS, PLOT_STYLE, COLORS, FIGURE_DPI,
-    SAVE_PLOTS, OUTPUT_DIR
+    SAVE_PLOTS, OUTPUT_DIR, ANSWER_COL
 )
 
 
@@ -45,7 +45,7 @@ def save_figure(fig: plt.Figure, filename: str) -> None:
 # ------------------------------------------------------------------
 
 def plot_answer_distribution(df: pd.DataFrame,
-                              answer_col: str = "answer",
+                              answer_col = ANSWER_COL,
                               title: str = "Answer Label Distribution") -> None:
     """
     Plot bar and pie charts of answer label frequencies.

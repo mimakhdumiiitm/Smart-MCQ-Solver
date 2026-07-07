@@ -340,13 +340,13 @@ def step_similarity(train_df:      pd.DataFrame,
     # TF-IDF similarity
     train_df = tfidf_prompt_option_similarity(
         train_df, tfidf_embedder,
-        prompt_col="prompt", option_cols=OPTION_COLS
+        prompt_col=PROMPT_COL, option_cols=OPTION_COLS
     )
 
     # Word2Vec similarity
     train_df = w2v_prompt_option_similarity(
         train_df, w2v_embedder,
-        prompt_col="prompt", option_cols=OPTION_COLS
+        prompt_col=PROMPT_COL, option_cols=OPTION_COLS
     )
 
     # Correct vs Incorrect analysis
