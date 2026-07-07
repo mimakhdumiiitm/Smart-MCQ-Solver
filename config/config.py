@@ -74,3 +74,42 @@ FIGURE_DPI  = 150
 SAVE_PLOTS  = False
 
 print("Config loaded successfully for Kaggle Environment.")
+
+# ==================================================================
+# Milestone 2
+# TRANSFORMER / HUGGINGFACE
+# ==================================================================
+
+SENTENCE_MODEL_NAME    = "sentence-transformers/all-MiniLM-L6-v2"
+
+BERT_VIZ_MODEL         = "bert-base-uncased"
+ROBERTA_VIZ_MODEL      = "roberta-base"
+ZERO_SHOT_MODEL_NAME   = "cross-encoder/nli-MiniLM2-L6-H768"
+TRANSFORMER_BATCH_SIZE = 64
+MAX_SEQ_LENGTH         = 128
+USE_FP16               = True
+
+# ==================================================================
+# CACHE / OUTPUT PATHS
+# ==================================================================
+
+EMBEDDING_CACHE_DIR    = "/kaggle/working/cache"
+TRAIN_EMB_CACHE        = "/kaggle/working/cache/train_transformer_emb.npy"
+TEST_EMB_CACHE         = "/kaggle/working/cache/test_transformer_emb.npy"
+ZS_TRAIN_CACHE         = "/kaggle/working/cache/zs_train_preds.pkl"
+ZS_TEST_CACHE          = "/kaggle/working/cache/zs_test_preds.pkl"
+
+# Processed DataFrames written by the EDA pipeline
+TRAIN_PROCESSED_PATH   = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/Smart-MCQ-Solver/outputs/processed_files/train_processed.csv"
+TEST_PROCESSED_PATH    = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/Smart-MCQ-Solver/outputs/processed_files/test_processed.csv"
+
+# Final submission
+SUBMISSION_OUTPUT_PATH = "/kaggle/working/outputs/submission.csv"
+
+# ==================================================================
+# WEIGHTS & BIASES
+# ==================================================================
+
+WANDB_PROJECT          = "22f3001418-t22026"
+WANDB_ENTITY           = None   
+WANDB_RUN_NAME         = "transformer-pipeline"
