@@ -1,56 +1,77 @@
-# updated config.py
-# Central configuration file for Smart MCQ Solver (Kaggle Dedicated)
+# config/config.py
+# updated for mielstone 2
+
+
 import os
+import torch
+
+# ==================================================================
+# PATHS — KAGGLE ENVIRONMENT
+# ==================================================================
 
 DATA_DIR        = "data"
 OUTPUT_DIR      = "/kaggle/working/outputs"
 MODEL_DIR       = "/kaggle/working/models"
 
-# Directory for saving processed dataframe CSVs (changeable from one place)
-
-# Corrected Kaggle Input Data Paths (removed /competitions/ if standard mount)
+# Kaggle Competition Input
 KAGGLE_COMP_DIR = "/kaggle/input/competitions/smart-mcq-solver-challenge"
 TRAIN_PATH      = os.path.join(KAGGLE_COMP_DIR, "train.csv")
 TEST_PATH       = os.path.join(KAGGLE_COMP_DIR, "test.csv")
 SUBMISSION_PATH = os.path.join(KAGGLE_COMP_DIR, "sample_submission.csv")
 
-# Corrected Pre-trained Word2Vec Path (Removed the URL path junk)
-# Corrected Pre-trained Word2Vec Path (Removed the URL path junk)
-W2V_MODEL_PATH  = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/models/w2v.model"
+# Processed Data Paths (output from EDA pipeline)
+PROCESSED_DIR        = "/kaggle/working/outputs/processed_files"
+TRAIN_PROCESSED_PATH = os.path.join(PROCESSED_DIR, "train_processed.csv")
+TEST_PROCESSED_PATH  = os.path.join(PROCESSED_DIR, "test_processed.csv")
 
-# Corrected Pre-trained TF-IDF Paths
-TFIDF_INPUT_PATH  = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/models/tfidf.pkl"
+# Pre-trained Model Inputs (from previous notebook)
+W2V_MODEL_PATH    = (
+    "/kaggle/input/notebooks/mimakhdumiiitm/"
+    "dl-22f3001418-notebook-t22026/models/w2v.model"
+)
+TFIDF_INPUT_PATH  = (
+    "/kaggle/input/notebooks/mimakhdumiiitm/"
+    "dl-22f3001418-notebook-t22026/models/tfidf.pkl"
+)
 TFIDF_OUTPUT_PATH = os.path.join(MODEL_DIR, "tfidf.pkl")
 
-# ------------------------------------------------------------------
+# Submission Output
+SUBMISSION_OUT_PATH = "/kaggle/working/submission.csv"
+RESULTS_PLOT_PATH   = "/kaggle/working/results_plot.png"
+
+# ==================================================================
 # COLUMN NAMES
-# ------------------------------------------------------------------
+# ==================================================================
+
 ID_COL      = "id"
 PROMPT_COL  = "prompt"
 ANSWER_COL  = "answer"
 OPTION_COLS = ["A", "B", "C", "D", "E"]
 TEXT_COLS   = [PROMPT_COL] + OPTION_COLS
 
-# ------------------------------------------------------------------
-# TEXT PREPROCESSING
-# ------------------------------------------------------------------
+# ==================================================================
+# TEXT PREPROCESSING  (EDA pipeline)
+# ==================================================================
+
 REMOVE_STOPWORDS = True
 LEMMATIZE        = True
 STEM             = False
 MIN_TOKEN_LENGTH = 2
 
-# ------------------------------------------------------------------
-# TF-IDF SETTINGS
-# ------------------------------------------------------------------
+# ==================================================================
+# TF-IDF SETTINGS  (EDA pipeline)
+# ==================================================================
+
 TFIDF_MAX_FEATURES = 5000
 TFIDF_NGRAM_RANGE  = (1, 2)
 TFIDF_MIN_DF       = 1
 TFIDF_MAX_DF       = 0.95
 TFIDF_SUBLINEAR_TF = True
 
-# ------------------------------------------------------------------
-# WORD2VEC SETTINGS
-# ------------------------------------------------------------------
+# ==================================================================
+# WORD2VEC SETTINGS  (EDA pipeline)
+# ==================================================================
+
 W2V_VECTOR_SIZE = 100
 W2V_WINDOW      = 5
 W2V_MIN_COUNT   = 1
@@ -59,57 +80,68 @@ W2V_EPOCHS      = 10
 W2V_WORKERS     = 4
 W2V_SEED        = 42
 
-# ------------------------------------------------------------------
+# ==================================================================
 # GENERAL
-# ------------------------------------------------------------------
+# ==================================================================
+
 RANDOM_SEED = 42
 TOP_K       = 3            # MAP@K evaluation
 
-# ------------------------------------------------------------------
+# ==================================================================
 # VISUALIZATION
-# ------------------------------------------------------------------
+# ==================================================================
+
 PLOT_STYLE  = "seaborn-v0_8-whitegrid"
 COLORS      = ["#2E86AB", "#A23B72", "#F18F01", "#C73E1D", "#3B1F2B"]
 FIGURE_DPI  = 150
 SAVE_PLOTS  = False
 
+# ==================================================================
+# GPU / DEVICE SETTINGS  (Transformer pipeline)
+# ==================================================================
+
+# CUDA environment flags — set before any model is loaded
+CUDA_LAUNCH_BLOCKING = "1"     # Better CUDA error reporting
+TORCH_USE_CUDA_DSA   = "1"     # Device-side assertions
+
+# Minimum compute capability to use CUDA (6.0 = P100 compatible)
+MIN_COMPUTE_CAPABILITY = 60    # cc = major*10 + minor  (6.0 → 60)
+
+# Precision settings
+# P100 has limited float16 support → use float32
+USE_FP16 = False
+TORCH_DTYPE = torch.float32
+
+# ==================================================================
+# TRANSFORMER MODEL SETTINGS  (Transformer pipeline)
+# ==================================================================
+
+# Sentence-BERT embedding model (P100-compatible)
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+# NLI zero-shot model (P100-compatible, float32 stable)
+ZEROSHOT_MODEL  = "typeform/distilbert-base-uncased-mnli"
+
+# Inference settings
+TRANSFORMER_BATCH_SIZE = 16    
+MAX_SEQ_LENGTH         = 128   
+
+# ==================================================================
+# ENSEMBLE SETTINGS  (Transformer pipeline)
+# ==================================================================
+
+STRATEGY         = "ensemble"
+ENSEMBLE_WEIGHTS = {"embedding": 0.45, "zeroshot": 0.55}
+
+# ==================================================================
+# WEIGHTS & BIASES SETTINGS
+# ==================================================================
+
+WANDB_PROJECT = "22f3001418-t22026"
+WANDB_RUN     = "transformer-embeddings-zeroshot"
+WANDB_TAGS    = ["transformer", "sentence-bert", "zero-shot", "map@3"]
+
+# W&B secret key name in Kaggle secrets
+WANDB_SECRET_KEY_NAME = "WANDB_API_KEY"
+
 print("Config loaded successfully for Kaggle Environment.")
-
-# ==================================================================
-# Milestone 2
-# TRANSFORMER / HUGGINGFACE
-# ==================================================================
-
-SENTENCE_MODEL_NAME    = "sentence-transformers/all-MiniLM-L6-v2"
-
-BERT_VIZ_MODEL         = "bert-base-uncased"
-ROBERTA_VIZ_MODEL      = "roberta-base"
-ZERO_SHOT_MODEL_NAME   = "cross-encoder/nli-MiniLM2-L6-H768"
-TRANSFORMER_BATCH_SIZE = 64
-MAX_SEQ_LENGTH         = 128
-USE_FP16               = True
-
-# ==================================================================
-# CACHE / OUTPUT PATHS
-# ==================================================================
-
-EMBEDDING_CACHE_DIR    = "/kaggle/working/cache"
-TRAIN_EMB_CACHE        = "/kaggle/working/cache/train_transformer_emb.npy"
-TEST_EMB_CACHE         = "/kaggle/working/cache/test_transformer_emb.npy"
-ZS_TRAIN_CACHE         = "/kaggle/working/cache/zs_train_preds.pkl"
-ZS_TEST_CACHE          = "/kaggle/working/cache/zs_test_preds.pkl"
-
-# Processed DataFrames written by the EDA pipeline
-TRAIN_PROCESSED_PATH   = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/Smart-MCQ-Solver/outputs/processed_files/train_processed.csv"
-TEST_PROCESSED_PATH    = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/Smart-MCQ-Solver/outputs/processed_files/test_processed.csv"
-
-# Final submission
-SUBMISSION_OUTPUT_PATH = "/kaggle/working/outputs/submission.csv"
-
-# ==================================================================
-# WEIGHTS & BIASES
-# ==================================================================
-
-WANDB_PROJECT          = "22f3001418-t22026"
-WANDB_ENTITY           = None   
-WANDB_RUN_NAME         = "transformer-pipeline"

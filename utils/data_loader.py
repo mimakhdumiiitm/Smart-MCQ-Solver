@@ -1,24 +1,31 @@
-# data_loader.py
+# utils/data_loader.py
+# updated for milestone 2
 
 import os
+import re
 import pandas as pd
 import numpy as np
+from typing import List, Tuple
+
+import wandb
 
 from config.config import (
     TRAIN_PATH, TEST_PATH, SUBMISSION_PATH,
-    ID_COL, PROMPT_COL, ANSWER_COL, OPTION_COLS, TEXT_COLS
+    TRAIN_PROCESSED_PATH, TEST_PROCESSED_PATH,
+    ID_COL, PROMPT_COL, ANSWER_COL, OPTION_COLS, TEXT_COLS,
+    OPTION_COLS,
 )
 
 
-# ------------------------------------------------------------------
-# CORE LOADER
-# ------------------------------------------------------------------
+# ==================================================================
+# EXISTING FUNCTIONS — UNCHANGED
+# ==================================================================
 
 def load_csv(filepath: str) -> pd.DataFrame:
     """
     Load a CSV file into a DataFrame.
     Raises FileNotFoundError with a helpful message if not found.
-    
+
     Usage:
         df = load_csv("data/train.csv")
     """
@@ -48,18 +55,14 @@ def load_submission(path: str = SUBMISSION_PATH) -> pd.DataFrame:
     return load_csv(path)
 
 
-# ------------------------------------------------------------------
-# VALIDATION
-# ------------------------------------------------------------------
-
 def validate_dataframe(df: pd.DataFrame,
                         required_cols: list,
                         name: str = "DataFrame") -> bool:
     """
     Check that all required columns exist in a DataFrame.
-    
+
     Returns True if valid, raises ValueError otherwise.
-    
+
     Usage:
         validate_dataframe(train_df, TEXT_COLS + [ANSWER_COL], "Train")
     """
@@ -76,7 +79,7 @@ def validate_dataframe(df: pd.DataFrame,
 def check_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     """
     Return a summary DataFrame of missing values per column.
-    
+
     Usage:
         missing_report = check_missing_values(train_df)
         print(missing_report)
@@ -98,7 +101,7 @@ def fill_missing_text(df: pd.DataFrame,
                        fill_value: str = "") -> pd.DataFrame:
     """
     Fill missing values in text columns with a placeholder string.
-    
+
     Usage:
         df = fill_missing_text(train_df, TEXT_COLS, fill_value="")
     """
@@ -115,38 +118,30 @@ def fill_missing_text(df: pd.DataFrame,
     return df
 
 
-# ------------------------------------------------------------------
-# BASIC STATISTICS
-# ------------------------------------------------------------------
-
 def basic_stats(df: pd.DataFrame) -> dict:
     """
     Compute and return a dict of basic dataset statistics.
-    
+
     Usage:
         stats = basic_stats(train_df)
-        for k, v in stats.items():
-            print(k, v)
     """
     stats = {
-        "n_rows"         : len(df),
-        "n_cols"         : len(df.columns),
-        "columns"        : df.columns.tolist(),
-        "dtypes"         : df.dtypes.to_dict(),
-        "memory_kb"      : df.memory_usage(deep=True).sum() / 1024,
-        "total_missing"  : df.isnull().sum().sum(),
+        "n_rows"        : len(df),
+        "n_cols"        : len(df.columns),
+        "columns"       : df.columns.tolist(),
+        "dtypes"        : df.dtypes.to_dict(),
+        "memory_kb"     : df.memory_usage(deep=True).sum() / 1024,
+        "total_missing" : df.isnull().sum().sum(),
     }
-
     if ANSWER_COL in df.columns:
         stats["answer_distribution"] = df[ANSWER_COL].value_counts().to_dict()
-
     return stats
 
 
 def print_basic_stats(df: pd.DataFrame, name: str = "Dataset") -> None:
     """
     Pretty-print basic dataset statistics.
-    
+
     Usage:
         print_basic_stats(train_df, "Train")
     """
@@ -162,3 +157,216 @@ def print_basic_stats(df: pd.DataFrame, name: str = "Dataset") -> None:
     if "answer_distribution" in stats:
         print(f"Answer Dist : {stats['answer_distribution']}")
     print(separator)
+
+
+# ==================================================================
+# NEW: TRANSFORMER PIPELINE DATA LOADER CLASS
+# ==================================================================
+
+class TransformerDataLoader:
+    """
+    Handles loading, cleaning, and formatting MCQ data specifically
+    for the transformer inference pipeline.
+
+    Reads from the processed CSV files produced by the EDA pipeline
+    (train_processed.csv / test_processed.csv) which are stored in
+    PROCESSED_DIR.
+
+    Usage:
+        loader     = TransformerDataLoader()
+        train_df   = loader.load_train()
+        test_df    = loader.load_test()
+        train_data = loader.format_rows(train_df)
+        test_data  = loader.format_rows(test_df)
+    """
+
+    def __init__(
+        self,
+        train_path   : str  = TRAIN_PROCESSED_PATH,
+        test_path    : str  = TEST_PROCESSED_PATH,
+        option_cols  : list = None,
+        option_labels: list = None,
+    ):
+        self.train_path    = train_path
+        self.test_path     = test_path
+        self.option_cols   = option_cols   or OPTION_COLS
+        self.option_labels = option_labels or OPTION_COLS  # ["A","B","C","D","E"]
+
+    # ------------------------------------------------------------------
+    # TEXT CLEANING
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def clean_text(text: str) -> str:
+        """
+        Basic text normalization for transformer input.
+
+        Operations:
+            1. Strip leading/trailing whitespace
+            2. Collapse multiple spaces to one
+            3. Remove characters outside word chars, whitespace,
+               and common punctuation (. , ? ! - ( ))
+
+        This is lighter than the EDA clean_text() — it intentionally
+        preserves punctuation because transformer tokenizers benefit
+        from it (unlike TF-IDF/W2V pipelines).
+
+        Usage:
+            cleaned = TransformerDataLoader.clean_text("  What  is  AI? ")
+            # "What is AI?"
+        """
+        if not isinstance(text, str):
+            return ""
+        text = text.strip()
+        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'[^\w\s\.\,\?\!\-\(\)]', ' ', text)
+        return text.strip()
+
+    # ------------------------------------------------------------------
+    # OPTION MAP BUILDER
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def build_option_map(
+        row          : pd.Series,
+        option_cols  : List[str],
+        option_labels: List[str],
+    ) -> dict:
+        """
+        Map option label → option text for a single DataFrame row.
+
+        Args:
+            row           : single DataFrame row (pd.Series)
+            option_cols   : column names in the DataFrame ["A","B","C","D","E"]
+            option_labels : label strings to use as dict keys ["A","B","C","D","E"]
+
+        Returns:
+            dict: {"A": "text of option A", "B": "text of option B", ...}
+            Empty-string values are included (filtered downstream).
+
+        Usage:
+            option_map = TransformerDataLoader.build_option_map(
+                row, ["A","B","C","D","E"], ["A","B","C","D","E"]
+            )
+        """
+        return {
+            label: TransformerDataLoader.clean_text(str(row[col]))
+            for label, col in zip(option_labels, option_cols)
+            if col in row.index
+        }
+
+    # ------------------------------------------------------------------
+    # LOAD TRAIN
+    # ------------------------------------------------------------------
+
+    def load_train(self) -> pd.DataFrame:
+        """
+        Load and preprocess training data from the processed CSV.
+
+        Operations:
+            1. Read CSV from TRAIN_PROCESSED_PATH
+            2. Apply clean_text to prompt → prompt_clean column
+            3. Apply clean_text to all option columns (in-place)
+            4. Standardize answer column to uppercase stripped string
+
+        Returns:
+            pd.DataFrame with prompt_clean column added.
+
+        Usage:
+            train_df = loader.load_train()
+        """
+        df = load_csv(self.train_path)
+        print(f"Train shape : {df.shape}")
+
+        # Clean prompt
+        df["prompt_clean"] = df["prompt"].apply(self.clean_text)
+
+        # Clean option columns in-place
+        for col in self.option_cols:
+            if col in df.columns:
+                df[col] = df[col].apply(self.clean_text)
+
+        # Standardize answer
+        if ANSWER_COL in df.columns:
+            df[ANSWER_COL] = df[ANSWER_COL].str.strip().str.upper()
+
+        print(f"   Columns     : {list(df.columns)}")
+        if ANSWER_COL in df.columns:
+            print(f"   Answer dist :\n{df[ANSWER_COL].value_counts()}")
+        return df
+
+    # ------------------------------------------------------------------
+    # LOAD TEST
+    # ------------------------------------------------------------------
+
+    def load_test(self) -> pd.DataFrame:
+        """
+        Load and preprocess test data from the processed CSV.
+
+        Operations:
+            1. Read CSV from TEST_PROCESSED_PATH
+            2. Apply clean_text to prompt → prompt_clean column
+            3. Apply clean_text to all option columns (in-place)
+
+        Returns:
+            pd.DataFrame with prompt_clean column added.
+
+        Usage:
+            test_df = loader.load_test()
+        """
+        df = load_csv(self.test_path)
+        print(f"Test shape  : {df.shape}")
+
+        df["prompt_clean"] = df["prompt"].apply(self.clean_text)
+        for col in self.option_cols:
+            if col in df.columns:
+                df[col] = df[col].apply(self.clean_text)
+
+        return df
+
+    # ------------------------------------------------------------------
+    # FORMAT FOR MODEL
+    # ------------------------------------------------------------------
+
+    def format_rows(self, df: pd.DataFrame) -> List[dict]:
+        """
+        Convert each DataFrame row into a structured dict for inference.
+
+        Each record contains:
+            id      : row identifier
+            prompt  : cleaned prompt text
+            options : dict of {label: cleaned_option_text}
+                      empty-string options are filtered out
+            answer  : correct label string or None (for test set)
+
+        Args:
+            df : DataFrame from load_train() or load_test()
+
+        Returns:
+            List of dicts, one per row.
+
+        Usage:
+            train_data = loader.format_rows(train_df)
+            # train_data[0] →
+            # {
+            #   "id"     : 0,
+            #   "prompt" : "What is the capital of France?",
+            #   "options": {"A": "London", "B": "Berlin", "C": "Paris", ...},
+            #   "answer" : "C"
+            # }
+        """
+        records = []
+        for _, row in df.iterrows():
+            option_map = self.build_option_map(
+                row, self.option_cols, self.option_labels
+            )
+            # Filter out empty option texts
+            option_map = {k: v for k, v in option_map.items() if v}
+
+            records.append({
+                "id"     : row.get(ID_COL, row.name),
+                "prompt" : row["prompt_clean"],
+                "options": option_map,
+                "answer" : row.get(ANSWER_COL, None),
+            })
+        return records
