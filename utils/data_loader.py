@@ -13,7 +13,7 @@ from config.config import (
     TRAIN_PATH, TEST_PATH, SUBMISSION_PATH,
     TRAIN_PROCESSED_PATH, TEST_PROCESSED_PATH,
     ID_COL, PROMPT_COL, ANSWER_COL, OPTION_COLS, TEXT_COLS,
-    OPTION_COLS,
+    OPTION_COLS,TRAIN_OUTPUT_PATH,TEST_OUTPUT_PATH
 )
 
 
@@ -293,6 +293,11 @@ class TransformerDataLoader:
         print(f"   Columns     : {list(df.columns)}")
         if ANSWER_COL in df.columns:
             print(f"   Answer dist :\n{df[ANSWER_COL].value_counts()}")
+
+        # Save processed train file to working directory
+        df.to_csv(TRAIN_OUTPUT_PATH, index=False)
+        print(f"Processed train saved to: {TRAIN_OUTPUT_PATH}")
+
         return df
 
     # ------------------------------------------------------------------
@@ -321,7 +326,9 @@ class TransformerDataLoader:
         for col in self.option_cols:
             if col in df.columns:
                 df[col] = df[col].apply(self.clean_text)
-
+# Save processed test file to working directory
+        df.to_csv(TEST_OUTPUT_PATH, index=False)
+        print(f"Processed test saved to: {TEST_OUTPUT_PATH}")
         return df
 
     # ------------------------------------------------------------------

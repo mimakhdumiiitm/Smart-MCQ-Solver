@@ -24,6 +24,12 @@ PROCESSED_DIR        = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-not
 TRAIN_PROCESSED_PATH = os.path.join(PROCESSED_DIR, "train_processed.csv")
 TEST_PROCESSED_PATH  = os.path.join(PROCESSED_DIR, "test_processed.csv")
 
+# Processed files output directory
+PROCESSED_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "processed_files")
+os.makedirs(PROCESSED_OUTPUT_DIR, exist_ok=True)
+TRAIN_OUTPUT_PATH = os.path.join(PROCESSED_OUTPUT_DIR, "train_processed.csv")
+TEST_OUTPUT_PATH = os.path.join(PROCESSED_OUTPUT_DIR, "test_processed.csv")
+
 # Pre-trained Model Inputs (from previous notebook)
 W2V_MODEL_PATH    = (
     "/kaggle/input/notebooks/mimakhdumiiitm/"
