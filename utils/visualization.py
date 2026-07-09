@@ -12,7 +12,7 @@ from wordcloud import WordCloud
 
 from config.config import (
     OPTION_COLS, PLOT_STYLE, COLORS, FIGURE_DPI,
-    SAVE_PLOTS, OUTPUT_DIR, ANSWER_COL
+    SAVE_PLOTS, OUTPUT_DIR, ANSWER_COL, RANDOM_SEED
 )
 
 
