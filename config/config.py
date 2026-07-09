@@ -20,7 +20,7 @@ TEST_PATH       = os.path.join(KAGGLE_COMP_DIR, "test.csv")
 SUBMISSION_PATH = os.path.join(KAGGLE_COMP_DIR, "sample_submission.csv")
 
 # Processed Data Paths (output from EDA pipeline)
-PROCESSED_DIR        = "/kaggle/working/outputs/processed_files"
+PROCESSED_DIR        = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/processed_files/"
 TRAIN_PROCESSED_PATH = os.path.join(PROCESSED_DIR, "train_processed.csv")
 TEST_PROCESSED_PATH  = os.path.join(PROCESSED_DIR, "test_processed.csv")
 
