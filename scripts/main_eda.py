@@ -254,16 +254,15 @@ def step_tfidf(train_df, test_df):
     # Reuse TF-IDF model from previous notebook if available
     if os.path.exists(TFIDF_INPUT_PATH):
         print(f"--> Reusing saved model from Kaggle Input: {TFIDF_INPUT_PATH}")
-        embedder = embedder.load(TFIDF_INPUT_PATH)
-
+        embedder.load(TFIDF_INPUT_PATH)
     else:
         print("--> No saved model found. Fitting vocabulary from scratch...")
-
         train_corpus = build_row_corpus(train_df, cols=TEXT_COLS)
         embedder.fit(train_corpus)
 
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        embedder.save(TFIDF_OUTPUT_PATH)
+    # Always write the TF-IDF model to the local model directory for each run
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    embedder.save(TFIDF_OUTPUT_PATH)
 
     # Transform train data
     print("Transforming training corpus...")
@@ -295,27 +294,24 @@ def step_word2vec(train_df: pd.DataFrame):
     print("=" * 50)
 
     # Use the clean, explicit path from your imported config module
-    saved_model_path = W2V_MODEL_PATH  
+    saved_model_path = W2V_MODEL_PATH
 
     if os.path.exists(saved_model_path):
         print(f"Found pre-saved model at: {saved_model_path}")
-        
         w2v_embedder = Word2VecEmbedder()
-        w2v_embedder.model = Word2Vec.load(saved_model_path) 
-        
+        w2v_embedder.model = Word2Vec.load(saved_model_path)
         print(f"Word2Vec loaded successfully | vocab size : {len(w2v_embedder.model.wv)}")
     else:
         print("Pre-saved model not found! Falling back to training from scratch...")
-        
-        # Explicitly use config values here too 
-        sentences = build_token_sentences(train_df, TEXT_COLS) 
+        sentences = build_token_sentences(train_df, TEXT_COLS)
         print(f"Total training sentences : {len(sentences)}")
 
         w2v_embedder = Word2VecEmbedder()
         w2v_embedder.fit(sentences)
-        
-        os.makedirs(MODEL_DIR, exist_ok=True) 
-        w2v_embedder.save(os.path.join(MODEL_DIR, "w2v.model")) 
+
+    # Always save the Word2Vec model locally on each run
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    w2v_embedder.save(os.path.join(MODEL_DIR, "w2v.model"))
 
     # PCA visualization using config hyperparameters
     vocab_words = list(w2v_embedder.model.wv.key_to_index.keys())[:100]
