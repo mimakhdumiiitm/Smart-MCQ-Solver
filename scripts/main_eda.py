@@ -3,7 +3,6 @@ import os
 # ============================================================
 # SETUP
 # ============================================================
-
 import numpy as np
 import pandas as pd
 from collections import Counter
@@ -11,7 +10,6 @@ from collections import Counter
 # ============================================================
 # CONFIG IMPORTS
 # ============================================================
-
 from config.config import (
     TEXT_COLS,
     OPTION_COLS,
@@ -34,7 +32,6 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # ============================================================
 # DATA LOADING
 # ============================================================
-
 from utils.data_loader import (
     load_train,
     load_test,
@@ -47,7 +44,6 @@ from utils.data_loader import (
 # ============================================================
 # PREPROCESSING
 # ============================================================
-
 from src.preprocessing import (
     clean_dataframe,
     add_text_length_features,
@@ -58,7 +54,6 @@ from src.preprocessing import (
 # ============================================================
 # EMBEDDINGS
 # ============================================================
-
 from src.embeddings import (
     TFIDFEmbedder,
     Word2VecEmbedder,
@@ -68,7 +63,6 @@ from src.embeddings import (
 # ============================================================
 # SIMILARITY
 # ============================================================
-
 from src.similarity import (
     tfidf_prompt_option_similarity,
     w2v_prompt_option_similarity,
@@ -80,7 +74,6 @@ from src.similarity import (
 # ============================================================
 # METRICS
 # ============================================================
-
 from utils.metrics import (
     evaluation_report,
     rank_distribution,
@@ -90,7 +83,6 @@ from utils.metrics import (
 # ============================================================
 # VISUALIZATION
 # ============================================================
-
 from utils.visualization import (
     plot_answer_distribution,
     plot_text_length_distributions,
@@ -108,13 +100,11 @@ from gensim.models import Word2Vec
 # ============================================================
 # MAIN EDA PIPELINE STARTS HERE
 # ============================================================
-
 print("All modules imported successfully.")
 
 # ==================================================================
 # STEP 1: LOAD DATA
 # ==================================================================
-
 def step_load_data():
     print("\n" + "=" * 50)
     print("STEP 1 : LOAD DATA")
@@ -145,7 +135,6 @@ def step_load_data():
 # ==================================================================
 # STEP 2: TEXT CLEANING & TOKENIZATION
 # ==================================================================
-
 def step_preprocessing(train_df: pd.DataFrame,
                         test_df:  pd.DataFrame):
     print("\n" + "=" * 50)
@@ -192,7 +181,6 @@ def save_processed_dataframes(train_df: pd.DataFrame, test_df: pd.DataFrame):
 # ==================================================================
 # STEP 3: WORD FREQUENCY & WORD CLOUDS
 # ==================================================================
-
 def step_word_frequency(train_df: pd.DataFrame):
     print("\n" + "=" * 50)
     print("STEP 3 : WORD FREQUENCY ANALYSIS")
@@ -230,7 +218,6 @@ def step_word_frequency(train_df: pd.DataFrame):
 # ==================================================================
 # STEP 4: ANSWER DISTRIBUTION
 # ==================================================================
-
 def step_answer_distribution(train_df: pd.DataFrame):
     print("\n" + "=" * 50)
     print("STEP 4 : ANSWER DISTRIBUTION")
@@ -287,8 +274,6 @@ def step_tfidf(train_df, test_df):
 # STEP 6: WORD2VEC EMBEDDINGS
 # ==================================================================
 # step 6 - modified
-from gensim.models import Word2Vec
-
 def step_word2vec(train_df: pd.DataFrame):
     print("\n" + "=" * 50)
     print("STEP 6 : WORD2VEC EMBEDDINGS")
@@ -326,7 +311,6 @@ def step_word2vec(train_df: pd.DataFrame):
 # ==================================================================
 # STEP 7: COSINE SIMILARITY
 # ==================================================================
-
 def step_similarity(train_df:      pd.DataFrame,
                     tfidf_embedder: TFIDFEmbedder,
                     w2v_embedder:   Word2VecEmbedder):
@@ -384,7 +368,6 @@ def step_similarity(train_df:      pd.DataFrame,
 # ==================================================================
 # STEP 8: MAP@3 EVALUATION
 # ==================================================================
-
 def step_metrics(train_df: pd.DataFrame):
     print("\n" + "=" * 50)
     print("STEP 8 : MAP@3 EVALUATION")

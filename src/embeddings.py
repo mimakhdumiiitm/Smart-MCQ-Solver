@@ -16,8 +16,7 @@ from config.config import (
     TFIDF_MAX_FEATURES, TFIDF_NGRAM_RANGE, TFIDF_MIN_DF,
     TFIDF_MAX_DF, TFIDF_SUBLINEAR_TF,
     W2V_VECTOR_SIZE, W2V_WINDOW, W2V_MIN_COUNT,
-    W2V_SG, W2V_EPOCHS, W2V_WORKERS, W2V_SEED,
-    OPTION_COLS, PROMPT_COL, MODEL_DIR
+    W2V_SG, W2V_EPOCHS, W2V_WORKERS, W2V_SEED
 )
 from .preprocessing import clean_text
 
@@ -25,7 +24,6 @@ from .preprocessing import clean_text
 # ------------------------------------------------------------------
 # TF-IDF
 # ------------------------------------------------------------------
-
 class TFIDFEmbedder:
     """
     Wrapper around sklearn TfidfVectorizer for the MCQ pipeline.
@@ -168,7 +166,6 @@ def top_features_from_matrix(matrix, feature_names: np.ndarray,
 # ------------------------------------------------------------------
 # WORD2VEC
 # ------------------------------------------------------------------
-
 class Word2VecEmbedder:
     """
     Wrapper around Gensim Word2Vec for the MCQ pipeline.
@@ -310,7 +307,6 @@ class Word2VecEmbedder:
 # ------------------------------------------------------------------
 # DIMENSIONALITY REDUCTION
 # ------------------------------------------------------------------
-
 def reduce_with_pca(matrix: np.ndarray,
                     n_components: int = 2,
                     seed: int         = 42) -> tuple:

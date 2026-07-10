@@ -47,3 +47,5 @@ dist/
 *.egg-info/
 
 outputs/processed_files
+
+kaggle_outputs/

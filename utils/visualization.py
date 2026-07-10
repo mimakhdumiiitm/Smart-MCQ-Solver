@@ -5,21 +5,19 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 import seaborn as sns
 from collections import Counter
 from wordcloud import WordCloud
 
 from config.config import (
     OPTION_COLS, PLOT_STYLE, COLORS, FIGURE_DPI,
-    SAVE_PLOTS, OUTPUT_DIR, ANSWER_COL, RANDOM_SEED
+    SAVE_PLOTS, OUTPUT_DIR, ANSWER_COL
 )
 
 
 # ------------------------------------------------------------------
 # SETUP
 # ------------------------------------------------------------------
-
 def setup_plot_style() -> None:
     """Apply the global matplotlib style from config."""
     plt.style.use(PLOT_STYLE)
@@ -27,12 +25,6 @@ def setup_plot_style() -> None:
 
 
 def save_figure(fig: plt.Figure, filename: str) -> None:
-    """
-    Save a figure to the OUTPUT_DIR if SAVE_PLOTS is True.
-
-    Usage:
-        save_figure(fig, "answer_distribution.png")
-    """
     if SAVE_PLOTS:
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         path = os.path.join(OUTPUT_DIR, filename)
@@ -47,12 +39,6 @@ def save_figure(fig: plt.Figure, filename: str) -> None:
 def plot_answer_distribution(df: pd.DataFrame,
                               answer_col = ANSWER_COL,
                               title: str = "Answer Label Distribution") -> None:
-    """
-    Plot bar and pie charts of answer label frequencies.
-
-    Usage:
-        plot_answer_distribution(train_df)
-    """
     setup_plot_style()
     counts = df[answer_col].value_counts().sort_index()
 
@@ -94,12 +80,7 @@ def plot_answer_distribution(df: pd.DataFrame,
 
 def plot_text_length_distributions(df: pd.DataFrame,
                                    cols: list = None) -> None:
-    """
-    Plot word count histograms for specified text columns.
 
-    Usage:
-        plot_text_length_distributions(train_df, TEXT_COLS)
-    """
     setup_plot_style()
     if cols is None:
         cols = ["prompt"] + OPTION_COLS
@@ -135,14 +116,6 @@ def plot_top_words(word_freq: Counter,
                    n: int     = 20,
                    color: str = None,
                    filename: str = "top_words.png") -> None:
-    """
-    Plot a horizontal bar chart of the top-n most frequent words.
-
-    Usage:
-        from collections import Counter
-        freq = Counter(all_tokens)
-        plot_top_words(freq, title="Prompt Words", n=20)
-    """
     setup_plot_style()
     if color is None:
         color = COLORS[0]
@@ -168,12 +141,7 @@ def plot_wordcloud(tokens: list,
                    title: str    = "Word Cloud",
                    colormap: str = "Blues",
                    filename: str = "wordcloud.png") -> None:
-    """
-    Generate and display a word cloud from a list of tokens.
 
-    Usage:
-        plot_wordcloud(prompt_tokens, title="Prompt Word Cloud")
-    """
     setup_plot_style()
     text = " ".join(tokens)
     wc   = WordCloud(
@@ -200,16 +168,7 @@ def plot_similarity_distributions(correct_sims: list,
                                   incorrect_sims: list,
                                   method_name: str = "TF-IDF",
                                   filename: str    = "similarity_dist.png") -> None:
-    """
-    Overlay histograms comparing similarity scores for correct vs
-    incorrect answer options.
 
-    Usage:
-        result = similarity_correct_vs_incorrect(train_df, "tfidf_sim")
-        plot_similarity_distributions(
-            result["correct"], result["incorrect"], "TF-IDF"
-        )
-    """
     setup_plot_style()
     fig, ax = plt.subplots(figsize=(9, 5))
 
@@ -240,13 +199,7 @@ def plot_inter_option_heatmap(sim_matrix: np.ndarray,
                               option_cols: list = None,
                               title: str = "Inter-Option Cosine Similarity",
                               filename: str = "inter_option_heatmap.png") -> None:
-    """
-    Plot a heatmap of pairwise inter-option similarity scores.
 
-    Usage:
-        matrix = inter_option_similarity_matrix(train_df, tfidf_embedder)
-        plot_inter_option_heatmap(matrix)
-    """
     setup_plot_style()
     if option_cols is None:
         option_cols = OPTION_COLS
@@ -270,12 +223,7 @@ def plot_mean_similarity_per_option(df: pd.DataFrame,
                                     option_cols: list = None,
                                     title: str        = "Mean Similarity per Option",
                                     filename: str     = "mean_sim_per_option.png") -> None:
-    """
-    Bar chart of mean similarity score per option column.
 
-    Usage:
-        plot_mean_similarity_per_option(train_df, sim_prefix="tfidf_sim")
-    """
     setup_plot_style()
     if option_cols is None:
         option_cols = OPTION_COLS
@@ -307,12 +255,7 @@ def plot_mean_similarity_per_option(df: pd.DataFrame,
 def plot_map_comparison(map_scores: dict,
                         k: int = 3,
                         filename: str = "map_comparison.png") -> None:
-    """
-    Horizontal bar chart comparing MAP@k across strategies.
 
-    Usage:
-        plot_map_comparison({"TF-IDF": 0.42, "Word2Vec": 0.35, "Random": 0.20})
-    """
     setup_plot_style()
     strategies = list(map_scores.keys())
     scores     = list(map_scores.values())
@@ -340,13 +283,6 @@ def plot_map_comparison(map_scores: dict,
 def plot_rank_distribution(rank_dist: dict,
                            k: int = 3,
                            filename: str = "rank_distribution.png") -> None:
-    """
-    Bar chart showing how often the correct answer appears at each rank.
-
-    Usage:
-        dist = rank_distribution(preds, actuals, k=3)
-        plot_rank_distribution(dist, k=3)
-    """
     setup_plot_style()
     labels = [f"Rank {r}" for r in range(1, k + 1)] + ["Not Found"]
     values = [rank_dist.get(r, 0) for r in range(1, k + 1)]
@@ -374,26 +310,11 @@ def plot_rank_distribution(rank_dist: dict,
 # ------------------------------------------------------------------
 # WORD2VEC PCA PLOT
 # ------------------------------------------------------------------
-
 def plot_w2v_pca(reduced: np.ndarray,
                  words: list,
                  n_label: int  = 50,
                  title: str    = "Word2Vec PCA Projection",
                  filename: str = "w2v_pca.png") -> None:
-    """
-    Scatter plot of 2-D PCA-reduced Word2Vec vectors with word labels.
-
-    Args:
-        reduced  : (n_words, 2) array of reduced vectors
-        words    : list of word strings corresponding to rows
-        n_label  : number of words to annotate
-        title    : plot title
-        filename : output filename
-
-    Usage:
-        reduced, pca = reduce_with_pca(word_vecs, n_components=2)
-        plot_w2v_pca(reduced, vocab_words[:100], n_label=40)
-    """
     setup_plot_style()
     fig, ax = plt.subplots(figsize=(13, 9))
     ax.scatter(reduced[:, 0], reduced[:, 1], alpha=0.4, s=25, c=COLORS[0])

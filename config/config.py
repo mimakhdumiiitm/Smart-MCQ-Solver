@@ -1,7 +1,6 @@
 # config/config.py
 # updated for mielstone 2
 
-
 import os
 import torch
 
@@ -9,20 +8,17 @@ import torch
 # PATHS — KAGGLE ENVIRONMENT
 # ==================================================================
 
-DATA_DIR        = "data"
 OUTPUT_DIR      = "/kaggle/working/outputs"
 MODEL_DIR       = "/kaggle/working/models"
 
 # Kaggle Competition Input
-KAGGLE_COMP_DIR = "/kaggle/input/competitions/smart-mcq-solver-challenge"
-TRAIN_PATH      = os.path.join(KAGGLE_COMP_DIR, "train.csv")
-TEST_PATH       = os.path.join(KAGGLE_COMP_DIR, "test.csv")
-SUBMISSION_PATH = os.path.join(KAGGLE_COMP_DIR, "sample_submission.csv")
+TRAIN_PATH      = "/kaggle/input/competitions/smart-mcq-solver-challenge/train.csv"
+TEST_PATH       = "/kaggle/input/competitions/smart-mcq-solver-challenge/test.csv"
+SUBMISSION_PATH = "/kaggle/input/competitions/smart-mcq-solver-challenge/sample_submission.csv"
 
 # Processed Data Paths (output from EDA pipeline)
-PROCESSED_DIR        = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/processed_files/"
-TRAIN_PROCESSED_PATH = os.path.join(PROCESSED_DIR, "train_processed.csv")
-TEST_PROCESSED_PATH  = os.path.join(PROCESSED_DIR, "test_processed.csv")
+TRAIN_PROCESSED_PATH = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/processed_files/train_processed.csv"
+TEST_PROCESSED_PATH  = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/processed_files/test_processed.csv"
 
 # Processed files output directory
 PROCESSED_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "processed_files")
@@ -31,14 +27,8 @@ TRAIN_OUTPUT_PATH = os.path.join(PROCESSED_OUTPUT_DIR, "train_processed.csv")
 TEST_OUTPUT_PATH = os.path.join(PROCESSED_OUTPUT_DIR, "test_processed.csv")
 
 # Pre-trained Model Inputs (from previous notebook)
-W2V_MODEL_PATH    = (
-    "/kaggle/input/notebooks/mimakhdumiiitm/"
-    "dl-22f3001418-notebook-t22026/models/w2v.model"
-)
-TFIDF_INPUT_PATH  = (
-    "/kaggle/input/notebooks/mimakhdumiiitm/"
-    "dl-22f3001418-notebook-t22026/models/tfidf.pkl"
-)
+W2V_MODEL_PATH    = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/models/w2v.model"
+TFIDF_INPUT_PATH  = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/models/tfidf.pkl"
 TFIDF_OUTPUT_PATH = os.path.join(MODEL_DIR, "tfidf.pkl")
 
 # Submission Output
@@ -48,7 +38,6 @@ RESULTS_PLOT_PATH   = "/kaggle/working/results_plot.png"
 # ==================================================================
 # COLUMN NAMES
 # ==================================================================
-
 ID_COL      = "id"
 PROMPT_COL  = "prompt"
 ANSWER_COL  = "answer"
@@ -81,7 +70,7 @@ TFIDF_SUBLINEAR_TF = True
 W2V_VECTOR_SIZE = 100
 W2V_WINDOW      = 5
 W2V_MIN_COUNT   = 1
-W2V_SG          = 1        # 1 = Skip-gram, 0 = CBOW
+W2V_SG          = 1        
 W2V_EPOCHS      = 10
 W2V_WORKERS     = 4
 W2V_SEED        = 42
@@ -105,8 +94,7 @@ SAVE_PLOTS  = False
 # ==================================================================
 # GPU / DEVICE SETTINGS  (Transformer pipeline)
 # ==================================================================
-
-# CUDA environment flags — set before any model is loaded
+# CUDA environment flags
 CUDA_LAUNCH_BLOCKING = "1"     # Better CUDA error reporting
 TORCH_USE_CUDA_DSA   = "1"     # Device-side assertions
 
@@ -121,11 +109,10 @@ TORCH_DTYPE = torch.float32
 # ==================================================================
 # TRANSFORMER MODEL SETTINGS  (Transformer pipeline)
 # ==================================================================
-
-# Sentence-BERT embedding model (P100-compatible)
+# Sentence-BERT embedding model 
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-# NLI zero-shot model (P100-compatible, float32 stable)
+# NLI zero-shot model 
 ZEROSHOT_MODEL  = "typeform/distilbert-base-uncased-mnli"
 
 # Inference settings
