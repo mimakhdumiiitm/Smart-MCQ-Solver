@@ -45,3 +45,5 @@ tmp/
 build/
 dist/
 *.egg-info/
+
+outputs/processed_files

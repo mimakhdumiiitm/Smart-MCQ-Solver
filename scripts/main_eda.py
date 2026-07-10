@@ -24,6 +24,7 @@ from config.config import (
     TFIDF_OUTPUT_PATH,
     MODEL_DIR,
     W2V_MODEL_PATH,
+    PROCESSED_OUTPUT_DIR
 )
 
 # Create required directories
@@ -176,7 +177,7 @@ def save_processed_dataframes(train_df: pd.DataFrame, test_df: pd.DataFrame):
 
     Creates the directory if it does not exist.
     """
-    out_dir = OUTPUT_DIR
+    out_dir = PROCESSED_OUTPUT_DIR
     os.makedirs(out_dir, exist_ok=True)
 
     train_path = os.path.join(out_dir, "train_processed.csv")
