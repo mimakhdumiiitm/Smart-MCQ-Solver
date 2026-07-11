@@ -18,40 +18,31 @@ from config.config import (
     TEST_PROCESSED_PATH,
     SUBMISSION_OUT_PATH,
     RESULTS_PLOT_PATH,
-    OUTPUT_DIR,
-    MODEL_DIR,
     # Column names
-    ID_COL,
     OPTION_COLS,
-    ANSWER_COL,
     TOP_K,
     # Transformer settings
     EMBEDDING_MODEL,
     ZEROSHOT_MODEL,
     TRANSFORMER_BATCH_SIZE,
-    MAX_SEQ_LENGTH,
     STRATEGY,
     ENSEMBLE_WEIGHTS,
-    # W&B
-    WANDB_PROJECT,
-    WANDB_RUN,
 )
 
 # ------------------------------------------------------------------
 # MODULE IMPORTS
 # ------------------------------------------------------------------
 
-# from utils.wandb_utils          import setup_wandb, finish_wandb_run
+from utils.wandb_utils          import setup_wandb
 from utils.data_loader          import TransformerDataLoader
 from utils.metrics              import MAP3Evaluator
-# from utils.submission           import SubmissionGenerator
-# from src.model_loader           import safe_load_sbert, safe_load_nli
-# from src.transformer_embeddings import (
-#     EmbeddingScorer,
-#     ZeroShotScorer,
-#     smoke_test,
-# )
-# from src.ranker import EnsembleRanker
+from utils.submission           import SubmissionGenerator
+from src.transformer_embeddings import (
+    EmbeddingScorer,
+    ZeroShotScorer,
+    smoke_test,
+)
+from src.ranker import EnsembleRanker
 
 print("All modules imported successfully.")
 
