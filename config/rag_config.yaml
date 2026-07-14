@@ -1,0 +1,37 @@
+# RAG Configuration — integrated with Smart MCQ Solver pipeline
+
+rag:
+  enabled: true
+  version: "v1.0"
+
+retrieval:
+  vector_db_path: "outputs/vector_db"
+  vector_db_type: "faiss"           # faiss | chroma
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  top_k: 5
+  similarity_threshold: 0.0
+  query_expansion: true             # prepend question + all choices
+  chunk_size: 512
+  chunk_overlap: 64
+
+llm:
+  model_name: "google/flan-t5-large"   # fits T4 GPU; swap for larger if needed
+  device: "cuda"
+  max_new_tokens: 128
+  temperature: 0.0
+  batch_size: 8
+  use_4bit: false                      # enable for 7B+ models
+
+prompt:
+  version: "v2"
+  max_context_tokens: 512
+  include_reasoning: true
+
+ensemble:
+  rag_weight: 0.35
+  baseline_weight: 0.65
+
+wandb:
+  project: "smart-mcq-solver"
+  run_name: "rag-integration"
+  tags: ["rag", "faiss", "flan-t5", "map@3"]
