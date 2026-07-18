@@ -19,6 +19,8 @@ FIGURE_DPI   = 150
 SAVE_PLOTS   = True
 OUTPUT_DIR   = "/kaggle/working/outputs"
 PLOT_DIR     = "/kaggle/working/outputs/plots"
+PREBUILT_TFIDF_MODEL_PATH = Path("/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026outputs/models/tfidf_vectorizer.pkl")
+PREBUILT_W2V_MODEL_PATH   = Path("/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026outputs/models/word2vec.model")
 
 
 # ─────────────────────────────────────────────
@@ -164,6 +166,12 @@ class Config:
                 logger.info(f"  GPU {i}: {name} ({mem:.1f} GB)")
 
     # ── Derived path helpers ───────────────────────────────────────
+    def _resolve_model_path(self, prebuilt_path: Path, fallback_name: str) -> Path:
+        """Prefer the prebuilt Kaggle input artifact when it exists."""
+        if prebuilt_path.exists():
+            return prebuilt_path
+        return Path(self.model_dir) / fallback_name
+
     @property
     def train_path(self) -> Path:
         return Path(self.data_dir) / self.train_file
@@ -182,8 +190,14 @@ class Config:
 
     @property
     def tfidf_model_path(self) -> Path:
-        return Path(self.model_dir) / "tfidf_vectorizer.pkl"
+        return self._resolve_model_path(
+            PREBUILT_TFIDF_MODEL_PATH,
+            "tfidf_vectorizer.pkl",
+        )
 
     @property
     def w2v_model_path(self) -> Path:
-        return Path(self.model_dir) / "word2vec.model"
+        return self._resolve_model_path(
+            PREBUILT_W2V_MODEL_PATH,
+            "word2vec.model",
+        )

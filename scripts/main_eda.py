@@ -476,7 +476,7 @@ def generate_submission(
     cfg           : Config,
     test_df       : "pd.DataFrame",
     ens_test_preds: List[List[str]],
-    filename      : str = "phase1_baseline_submission.csv",
+    filename      : str = "Milestone1_submission.csv",
 ) -> "pd.DataFrame":
     """
     Write the Kaggle submission CSV and return it as a DataFrame.
