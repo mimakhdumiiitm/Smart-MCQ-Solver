@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from evaluation.evaluator import MAPAtKEvaluator
+from src.evaluation.evaluator import MAPAtKEvaluator
 
 logger = logging.getLogger("ScoreFuser")
 
