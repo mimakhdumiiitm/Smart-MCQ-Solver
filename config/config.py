@@ -1,146 +1,4 @@
-<<<<<<< HEAD
-# config/config.py
-# updated for mielstone 2
-
-import os
-import torch
-
-# ==================================================================
-# PATHS — KAGGLE ENVIRONMENT
-# ==================================================================
-
-OUTPUT_DIR      = "/kaggle/working/outputs"
-MODEL_DIR       = "/kaggle/working/models"
-
-# Kaggle Competition Input
-TRAIN_PATH      = "/kaggle/input/competitions/smart-mcq-solver-challenge/train.csv"
-TEST_PATH       = "/kaggle/input/competitions/smart-mcq-solver-challenge/test.csv"
-SUBMISSION_PATH = "/kaggle/input/competitions/smart-mcq-solver-challenge/sample_submission.csv"
-
-# Processed Data Paths (output from EDA pipeline)
-TRAIN_PROCESSED_PATH = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/processed_files/train_processed.csv"
-TEST_PROCESSED_PATH  = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/processed_files/test_processed.csv"
-
-# Processed files output directory
-PROCESSED_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "processed_files")
-os.makedirs(PROCESSED_OUTPUT_DIR, exist_ok=True)
-TRAIN_OUTPUT_PATH = os.path.join(PROCESSED_OUTPUT_DIR, "train_processed.csv")
-TEST_OUTPUT_PATH = os.path.join(PROCESSED_OUTPUT_DIR, "test_processed.csv")
-
-# Pre-trained Model Inputs (from previous notebook)
-W2V_MODEL_PATH    = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/models/w2v.model"
-TFIDF_INPUT_PATH  = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/models/tfidf.pkl"
-TFIDF_OUTPUT_PATH = os.path.join(MODEL_DIR, "tfidf.pkl")
-
-# Submission Output
-SUBMISSION_OUT_PATH = "/kaggle/working/submission.csv"
-RESULTS_PLOT_PATH   = "/kaggle/working/results_plot.png"
-
-# ==================================================================
-# COLUMN NAMES
-# ==================================================================
-ID_COL      = "id"
-PROMPT_COL  = "prompt"
-ANSWER_COL  = "answer"
-OPTION_COLS = ["A", "B", "C", "D", "E"]
-TEXT_COLS   = [PROMPT_COL] + OPTION_COLS
-
-# ==================================================================
-# TEXT PREPROCESSING  (EDA pipeline)
-# ==================================================================
-
-REMOVE_STOPWORDS = True
-LEMMATIZE        = True
-STEM             = False
-MIN_TOKEN_LENGTH = 2
-
-# ==================================================================
-# TF-IDF SETTINGS  (EDA pipeline)
-# ==================================================================
-
-TFIDF_MAX_FEATURES = 5000
-TFIDF_NGRAM_RANGE  = (1, 2)
-TFIDF_MIN_DF       = 1
-TFIDF_MAX_DF       = 0.95
-TFIDF_SUBLINEAR_TF = True
-
-# ==================================================================
-# WORD2VEC SETTINGS  (EDA pipeline)
-# ==================================================================
-
-W2V_VECTOR_SIZE = 100
-W2V_WINDOW      = 5
-W2V_MIN_COUNT   = 1
-W2V_SG          = 1        
-W2V_EPOCHS      = 10
-W2V_WORKERS     = 4
-W2V_SEED        = 42
-
-# ==================================================================
-# GENERAL
-# ==================================================================
-
-RANDOM_SEED = 42
-TOP_K       = 3            # MAP@K evaluation
-
-# ==================================================================
-# VISUALIZATION
-# ==================================================================
-
-PLOT_STYLE  = "seaborn-v0_8-whitegrid"
-COLORS      = ["#2E86AB", "#A23B72", "#F18F01", "#C73E1D", "#3B1F2B"]
-FIGURE_DPI  = 150
-SAVE_PLOTS  = False
-
-# ==================================================================
-# GPU / DEVICE SETTINGS  (Transformer pipeline)
-# ==================================================================
-# CUDA environment flags
-CUDA_LAUNCH_BLOCKING = "1"     # Better CUDA error reporting
-TORCH_USE_CUDA_DSA   = "1"     # Device-side assertions
-
-# Minimum compute capability to use CUDA (6.0 = P100 compatible)
-MIN_COMPUTE_CAPABILITY = 60    # cc = major*10 + minor  (6.0 → 60)
-
-# Precision settings
-# P100 has limited float16 support → use float32
-USE_FP16 = False
-TORCH_DTYPE = torch.float32
-
-# ==================================================================
-# TRANSFORMER MODEL SETTINGS  (Transformer pipeline)
-# ==================================================================
-# Sentence-BERT embedding model 
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-
-# NLI zero-shot model 
-ZEROSHOT_MODEL  = "typeform/distilbert-base-uncased-mnli"
-
-# Inference settings
-TRANSFORMER_BATCH_SIZE = 16    
-MAX_SEQ_LENGTH         = 128   
-
-# ==================================================================
-# ENSEMBLE SETTINGS  (Transformer pipeline)
-# ==================================================================
-
-STRATEGY         = "ensemble"
-ENSEMBLE_WEIGHTS = {"embedding": 0.45, "zeroshot": 0.55}
-
-# ==================================================================
-# WEIGHTS & BIASES SETTINGS
-# ==================================================================
-
-WANDB_PROJECT = "22f3001418-t22026"
-WANDB_RUN     = "transformer-embeddings-zeroshot"
-WANDB_TAGS    = ["transformer", "sentence-bert", "zero-shot", "map@3"]
-
-# W&B secret key name in Kaggle secrets
-WANDB_SECRET_KEY_NAME = "WANDB_API_KEY"
-
-print("Config loaded successfully for Kaggle Environment.")
-=======
-# updated config.py
+# config.py
 import os
 import torch
 import logging
@@ -208,9 +66,9 @@ class Config:
     # ── Paths ──────────────────────────────────────────────────────
     data_dir      : Path = Path("/kaggle/input/competitions/smart-mcq-solver-challenge")
     output_dir    : Path = Path("/kaggle/working/outputs")
-    model_dir     : Path = Path("/kaggle/working/outputs/models")         
+    model_dir     : Path = Path("/kaggle/working/outputs/models")
     submission_dir: Path = Path("/kaggle/working/outputs/submissions")
-    processed_dir : Path = Path("/kaggle/working/outputs/processed_files")  
+    processed_dir : Path = Path("/kaggle/working/outputs/processed_files")
     plot_dir      : Path = Path("/kaggle/working/outputs/plots")
 
     # ── Raw file names ─────────────────────────────────────────────
@@ -239,7 +97,7 @@ class Config:
     sbert_model     : str = "all-MiniLM-L6-v2"
     sbert_batch_size: int = 64
 
-    # ── Fine-tuning (Phase 4 – placeholder) ───────────────────────
+    # ── Fine-tuning ────────────────────────────────────────────────
     finetune_model              : str   = "microsoft/deberta-v3-small"
     max_length                  : int   = 512
     learning_rate               : float = 2e-5
@@ -247,6 +105,7 @@ class Config:
     num_epochs                  : int   = 3
     train_batch_size            : int   = 4
     eval_batch_size             : int   = 8
+    batch_size                  : int   = 16   # general-purpose batch size (Milestone 2-3)
     gradient_accumulation_steps : int   = 8
     warmup_ratio                : float = 0.1
     fp16                        : bool  = True
@@ -280,25 +139,45 @@ class Config:
     n_gpus     : int  = field(default_factory=torch.cuda.device_count)
 
     # ── Persistence flags ──────────────────────────────────────────
-    # Set to False to force re-training even when cached files exist
     use_cached_models   : bool = True
     use_cached_processed: bool = True
 
+    # ── Zero-shot NLI model (Milestone 2-3) ───────────────────────
+    zs_model_key: str = "deberta-small"   # see ZeroShotMCQRanker.NLI_MODELS
+
+    # ── Transformer embedding model (Milestone 2-3) ───────────────
+    tr_model_key: str = "deberta"         # see TransformerEmbeddingRanker.SUPPORTED_MODELS
+
+    # ──────────────────────────────────────────────────────────────
     def __post_init__(self) -> None:
         """Create all output directories; log hardware info."""
-        set_seed(self.seed)
-        dirs = [
-            self.output_dir, self.model_dir,
-            self.submission_dir, self.processed_dir, self.plot_dir,
-        ]
-        for d in dirs:
-            Path(d).mkdir(parents=True, exist_ok=True)
+        # ── Normalise Path types (guards against str being passed in) ──
+        self.data_dir       = Path(self.data_dir)
+        self.output_dir     = Path(self.output_dir)
+        self.model_dir      = Path(self.model_dir)
+        self.submission_dir = Path(self.submission_dir)
+        self.processed_dir  = Path(self.processed_dir)
+        self.plot_dir       = Path(self.plot_dir)
 
-        # Keep module-level constants in sync with the dataclass
+        # ── Seed ───────────────────────────────────────────────────
+        set_seed(self.seed)
+
+        # ── Create directories ─────────────────────────────────────
+        for d in [
+            self.output_dir,
+            self.model_dir,
+            self.submission_dir,
+            self.processed_dir,
+            self.plot_dir,
+        ]:
+            d.mkdir(parents=True, exist_ok=True)
+
+        # ── Keep module-level constants in sync ────────────────────
         global OUTPUT_DIR, PLOT_DIR, SAVE_PLOTS
         OUTPUT_DIR = str(self.output_dir)
-        PLOT_DIR = str(self.plot_dir)
+        PLOT_DIR   = str(self.plot_dir)
 
+        # ── Hardware info ──────────────────────────────────────────
         logger.info(f"Device : {self.device}")
         logger.info(f"GPUs   : {self.n_gpus}")
         if torch.cuda.is_available():
@@ -312,23 +191,23 @@ class Config:
         """Prefer the prebuilt Kaggle input artifact when it exists."""
         if prebuilt_path.exists():
             return prebuilt_path
-        return Path(self.model_dir) / fallback_name
+        return self.model_dir / fallback_name
 
     @property
     def train_path(self) -> Path:
-        return Path(self.data_dir) / self.train_file
+        return self.data_dir / self.train_file
 
     @property
     def test_path(self) -> Path:
-        return Path(self.data_dir) / self.test_file
+        return self.data_dir / self.test_file
 
     @property
     def processed_train_path(self) -> Path:
-        return Path(self.processed_dir) / "train_processed.csv"
+        return self.processed_dir / "train_processed.csv"
 
     @property
     def processed_test_path(self) -> Path:
-        return Path(self.processed_dir) / "test_processed.csv"
+        return self.processed_dir / "test_processed.csv"
 
     @property
     def tfidf_model_path(self) -> Path:
@@ -343,4 +222,3 @@ class Config:
             PREBUILT_W2V_MODEL_PATH,
             "word2vec.model",
         )
->>>>>>> Milestone-1

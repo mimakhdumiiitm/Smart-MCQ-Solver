@@ -1,16 +1,6 @@
 torch
 torchvision
 transformers
-<<<<<<< HEAD
-sentence-transformers
-datasets
-gensim
-wordcloud
-matplotlib
-seaborn
-tqdm
-wandb
-=======
 datasets
 peft
 accelerate
@@ -29,4 +19,3 @@ einops
 pytest
 black
 isort
->>>>>>> Milestone-1
