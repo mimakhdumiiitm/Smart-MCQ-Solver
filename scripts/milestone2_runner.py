@@ -238,47 +238,10 @@ def run_milestone2(
     option_cols      : Optional[List[str]]           = None,
     baseline_scores  : Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, Any]:
-    """
-    Execute the full Milestone 2 pipeline.
-
-    All parameters are OPTIONAL – sane defaults are applied automatically.
-
-    Minimal notebook usage
-    ----------------------
-    >>> from src.milestone2_runner import run_milestone2
-    >>> results = run_milestone2()
-
-    With custom config
-    ------------------
-    >>> from src.config import Config
-    >>> cfg = Config(data_dir="/kaggle/input/my-dataset")
-    >>> results = run_milestone2(cfg)
-
-    With pre-loaded DataFrames
-    --------------------------
-    >>> results = run_milestone2(cfg, val_df=my_val, test_df=my_test)
-
-    Parameters
-    ----------
-    cfg             : Config object (auto-created with defaults if None)
-    val_df          : validation DataFrame (auto-loaded from disk if None)
-    test_df         : test DataFrame (auto-loaded from disk if None)
-    evaluator       : evaluator with evaluate() / scores_to_top_k_predictions()
-                      (built-in _Evaluator used if None)
-    option_cols     : e.g. ["A","B","C","D","E"]  (taken from cfg if None)
-    baseline_scores : Phase-1 score arrays (loaded from .npy files if None)
-
-    Returns
-    -------
-    dict with keys
-        "zs_val_scores", "zs_test_scores",
-        "transformer_val_scores", "transformer_test_scores",
-        "metrics"
-    """
 
     # ── 0. Build defaults for anything not supplied ───────────────────────────
     if cfg is None:
-        from src.config import Config          # lazy import – works without config.py too
+        from config.config import Config          # lazy import – works without config.py too
         cfg = Config()
         logger.info(f"[M2] Using default Config | device={cfg.device} | out={cfg.output_dir}")
 
