@@ -1,19 +1,33 @@
-# Virtual Environment
-.venv/
-venv/
-env/
-
 # Python cache
 __pycache__/
 *.py[cod]
 *.pyo
+*$py.class
+
+# Compiled extensions
+*.so
+
+# Python build/distribution
+.Python
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+
+# IDEs
+.vscode/
+.idea/
 
 # Jupyter
 .ipynb_checkpoints/
-
-# IDE
-.vscode/
-.idea/
 
 # OS files
 .DS_Store
@@ -22,25 +36,40 @@ Thumbs.db
 # Logs
 *.log
 
-# Environment variables
-.env
+# Data (too large for Git)
+data/raw/
+data/processed/
+*.csv
+*.parquet
 
 # Model files
-*.pkl
-.model
-*.joblib
-*.h5
-*.pt
-*.pth
-*.onnx
+outputs/models/
+
+# Model weights
+outputs/models/*.bin
+outputs/models/*.safetensors
+outputs/models/*.pt
+outputs/models/*.pth
+outputs/models/*.pkl
+outputs/models/*.joblib
+outputs/models/*.h5
+outputs/models/*.onnx
+outputs/models/*.model
+
+# Outputs
+outputs/
+submissions/
+wandb/
+logs/
 
 # Temporary files
 temp/
 tmp/
 
-# Qodo
-.qodo/
+# Editor swap files
+*.swp
 
+<<<<<<< HEAD
 # Python build files
 build/
 dist/
@@ -49,3 +78,7 @@ dist/
 outputs/processed_files
 
 kaggle_outputs/
+=======
+# Qodo
+.qodo/
+>>>>>>> milestone-1
