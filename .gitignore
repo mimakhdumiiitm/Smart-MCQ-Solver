@@ -43,16 +43,18 @@ data/processed/
 *.parquet
 
 # Model files
-models/
-*.bin
-*.safetensors
-*.pt
-*.pth
-*.pkl
-*.joblib
-*.h5
-*.onnx
-.model
+outputs/models/
+
+# Model weights
+outputs/models/*.bin
+outputs/models/*.safetensors
+outputs/models/*.pt
+outputs/models/*.pth
+outputs/models/*.pkl
+outputs/models/*.joblib
+outputs/models/*.h5
+outputs/models/*.onnx
+outputs/models/*.model
 
 # Outputs
 outputs/
