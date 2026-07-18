@@ -20,7 +20,7 @@ from src.models.sbert_ranker import SBERTRanker
 from src.ensemble.fuser import ScoreFuser
 from utils.submission import SubmissionGenerator
 
-from src.visualization.visualization import (
+from src.visualizaton.visualization import (
     plot_answer_distribution,
     plot_text_length_distributions,
     plot_top_words,
