@@ -6,7 +6,7 @@ import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 
 from config.config       import OPTION_COLS, PROMPT_COL
-from .preprocessing import clean_text
+from .preprocessing.preprocessing import clean_text
 
 
 # ------------------------------------------------------------------
