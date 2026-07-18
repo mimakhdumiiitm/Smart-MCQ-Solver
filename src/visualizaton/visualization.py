@@ -15,7 +15,7 @@ from wordcloud import WordCloud
 
 from config.config import (
     OPTION_COLS, PLOT_STYLE, COLORS,
-    FIGURE_DPI, SAVE_PLOTS, OUTPUT_DIR,
+    FIGURE_DPI, SAVE_PLOTS, PLOT_DIR,
 )
 
 logger = logging.getLogger("Visualization")
@@ -36,15 +36,15 @@ def setup_plot_style() -> None:
 
 def save_figure(fig: plt.Figure, filename: str) -> None:
     """
-    Save *fig* to OUTPUT_DIR when SAVE_PLOTS is True.
+    Save *fig* to PLOT_DIR when SAVE_PLOTS is True.
 
     Usage
     -----
         save_figure(fig, "answer_distribution.png")
     """
     if SAVE_PLOTS:
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        path = os.path.join(OUTPUT_DIR, filename)
+        os.makedirs(PLOT_DIR, exist_ok=True)
+        path = os.path.join(PLOT_DIR, filename)
         fig.savefig(path, dpi=FIGURE_DPI, bbox_inches="tight")
         logger.info(f"Figure saved → {path}")
 

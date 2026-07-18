@@ -18,6 +18,7 @@ COLORS       = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2",
 FIGURE_DPI   = 150
 SAVE_PLOTS   = True
 OUTPUT_DIR   = "/kaggle/working/outputs"
+PLOT_DIR     = "/kaggle/working/outputs/plots"
 
 
 # ─────────────────────────────────────────────
@@ -65,7 +66,7 @@ class Config:
     output_dir    : Path = Path("/kaggle/working/outputs")
     model_dir     : Path = Path("/kaggle/working/outputs/models")         
     submission_dir: Path = Path("/kaggle/working/outputs/submissions")
-    processed_dir : Path = Path("/kaggle/working/outputs/processed_data")  
+    processed_dir : Path = Path("/kaggle/working/outputs/processed_files")  
     plot_dir      : Path = Path("/kaggle/working/outputs/plots")
 
     # ── Raw file names ─────────────────────────────────────────────
@@ -150,8 +151,9 @@ class Config:
             Path(d).mkdir(parents=True, exist_ok=True)
 
         # Keep module-level constants in sync with the dataclass
-        global OUTPUT_DIR, SAVE_PLOTS
-        OUTPUT_DIR = str(self.plot_dir)
+        global OUTPUT_DIR, PLOT_DIR, SAVE_PLOTS
+        OUTPUT_DIR = str(self.output_dir)
+        PLOT_DIR = str(self.plot_dir)
 
         logger.info(f"Device : {self.device}")
         logger.info(f"GPUs   : {self.n_gpus}")
