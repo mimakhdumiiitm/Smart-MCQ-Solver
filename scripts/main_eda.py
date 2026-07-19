@@ -65,17 +65,21 @@ def setup(
     if use_wandb_override is not None:
         cfg.use_wandb = use_wandb_override
 
-    # One dedicated run per model — all grouped under "phase1-model-comparison"
-    wandb_runs = {
+    # ── One dedicated W&B run per model ───────────────────────────────────────
+    # All runs are initialised here so every model has a valid W&B run before
+    # any training begins.  Each run is grouped under "phase1-model-comparison"
+    # and shares the same common metric keys (accuracy, f1, precision, recall,
+    # map_at_k) so the W&B "compare runs" table works out of the box.
+    wandb_runs: Dict[str, Optional[object]] = {
         "tfidf"   : init_wandb(cfg, run_name="phase1-tfidf",    model_tag="tfidf"),
-        "word2vec": init_wandb(cfg, run_name="phase1-word2vec",  model_tag="word2vec"),
-        "sbert"   : init_wandb(cfg, run_name="phase1-sbert",     model_tag="sbert"),
+        "word2vec": init_wandb(cfg, run_name="phase1-word2vec", model_tag="word2vec"),
+        "sbert"   : init_wandb(cfg, run_name="phase1-sbert",    model_tag="sbert"),
     }
 
     evaluator = MAPAtKEvaluator(k=cfg.top_k)
     MAPAtKEvaluator.run_unit_tests()
 
-    logger.info("Setup complete.")
+    logger.info("Setup complete — W&B runs initialised for tfidf, word2vec, sbert.")
     return cfg, wandb_runs, evaluator
 
 
@@ -175,7 +179,7 @@ def train_models(
     test_df      : "pd.DataFrame",
     option_cols  : List[str],
     evaluator    : MAPAtKEvaluator,
-    wandb_runs   : Optional[Dict[str, Optional[object]]] = None,
+    wandb_runs   : Dict[str, Optional[object]],        # ← required, not optional
     run_sim_plots: bool = True,
 ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, np.ndarray]]]:
     """
@@ -197,35 +201,88 @@ def train_models(
             option_cols, evaluator, wandb_runs
         )
     """
-    if wandb_runs is None:
-        wandb_runs = {"tfidf": None, "word2vec": None, "sbert": None}
-
     models : Dict[str, Any]                   = {}
     scores : Dict[str, Dict[str, np.ndarray]] = {"val": {}, "test": {}}
     metrics: Dict[str, Dict[str, float]]      = {}
 
     # ── TF-IDF ───────────────────────────────────────────────────────────────
     models["tfidf"], scores, metrics["tfidf"] = _fit_tfidf(
-        cfg, fit_df, val_df, test_df, option_cols,
-        evaluator, wandb_runs["tfidf"], scores, run_sim_plots,
+        cfg       = cfg,
+        fit_df    = fit_df,
+        val_df    = val_df,
+        test_df   = test_df,
+        option_cols   = option_cols,
+        evaluator     = evaluator,
+        wandb_run     = wandb_runs.get("tfidf"),
+        scores        = scores,
+        run_sim_plots = run_sim_plots,
     )
 
     # ── Word2Vec ──────────────────────────────────────────────────────────────
     models["w2v"], scores, metrics["w2v"] = _fit_w2v(
-        cfg, fit_df, test_df, val_df, option_cols,
-        evaluator, wandb_runs["word2vec"], scores,
+        cfg         = cfg,
+        fit_df      = fit_df,
+        test_df     = test_df,
+        val_df      = val_df,
+        option_cols = option_cols,
+        evaluator   = evaluator,
+        wandb_run   = wandb_runs.get("word2vec"),
+        scores      = scores,
     )
 
     # ── SBERT ─────────────────────────────────────────────────────────────────
     models["sbert"], scores, metrics["sbert"] = _fit_sbert(
-        cfg, val_df, test_df, option_cols,
-        evaluator, wandb_runs["sbert"], scores, run_sim_plots,
+        cfg           = cfg,
+        val_df        = val_df,
+        test_df       = test_df,
+        option_cols   = option_cols,
+        evaluator     = evaluator,
+        wandb_run     = wandb_runs.get("sbert"),
+        scores        = scores,
+        run_sim_plots = run_sim_plots,
     )
 
     return models, scores
 
 
 # ── Per-model private helpers ──────────────────────────────────────────────────
+
+def _log_common_metrics(
+    wandb_run : Optional[object],
+    evaluator : MAPAtKEvaluator,
+    actuals   : List[str],
+    val_preds : List[List[str]],
+    model_name: str,
+) -> None:
+    """
+    Compute and log the shared metric set (accuracy, f1, precision, recall,
+    map_at_k) to the supplied W&B run.
+
+    Using identical metric *names* across all three runs is what allows W&B's
+    "Compare runs" view to place them side-by-side on the same axes.
+    """
+    clf_met   = evaluator.compute_classification_metrics(actuals, val_preds)
+    map_score = evaluator.mean_average_precision_at_k(actuals, val_preds)
+
+    # Common metric payload — keys are identical for every model so that W&B
+    # can compare runs on the same axes without any renaming.
+    common_metrics = {
+        "accuracy" : clf_met.get("accuracy",  0.0),
+        "f1"       : clf_met.get("f1",        0.0),
+        "precision": clf_met.get("precision", 0.0),
+        "recall"   : clf_met.get("recall",    0.0),
+        "map_at_k" : map_score,
+        # Include the raw clf_met dict as well so per-class breakdowns survive
+        **clf_met,
+    }
+
+    log_model_metrics(wandb_run, common_metrics)
+    logger.info(
+        f"[{model_name}] accuracy={common_metrics['accuracy']:.4f}  "
+        f"f1={common_metrics['f1']:.4f}  "
+        f"map@k={map_score:.4f}"
+    )
+
 
 def _fit_tfidf(
     cfg          : Config,
@@ -234,10 +291,10 @@ def _fit_tfidf(
     test_df      : "pd.DataFrame",
     option_cols  : List[str],
     evaluator    : MAPAtKEvaluator,
-    wandb_run    : Optional[object],
+    wandb_run    : Optional[object],               # ← received from caller
     scores       : Dict[str, Dict[str, np.ndarray]],
     run_sim_plots: bool,
-):
+) -> Tuple[TFIDFRanker, Dict, Dict]:
     """
     Fit/load TF-IDF, score val+test, compute & log metrics.
 
@@ -259,29 +316,29 @@ def _fit_tfidf(
     option_cols_present = [c for c in cfg.options if c in val_df.columns]
     val_preds = evaluator.scores_to_top_k_predictions(val_scores, option_cols_present)
 
-    # MAP metric (existing evaluator — wandb_run=None because we log below)
+    # MAP metric
     met = evaluator.evaluate(
         val_df, val_preds,
         answer_col=cfg.answer_col, split="tfidf_val", wandb_run=None,
     )
 
-    # ── Log F1 / accuracy / precision / recall / MAP to tfidf W&B run ────────
+    # ── Log common metrics to the tfidf W&B run ───────────────────────────────
     if cfg.answer_col in val_df.columns:
-        actuals   = val_df[cfg.answer_col].tolist()
-        clf_met   = evaluator.compute_classification_metrics(actuals, val_preds)
-        map_score = evaluator.mean_average_precision_at_k(actuals, val_preds)
-        log_model_metrics(wandb_run, {**clf_met, "map_at_k": map_score})
+        actuals = val_df[cfg.answer_col].tolist()
+        _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "TF-IDF")
 
-    # ── Similarity distribution plot ──────────────────────────────────────────
-    if run_sim_plots and cfg.answer_col in val_df.columns:
-        corr, incorr = _split_sim_scores(
-            val_scores, val_df[cfg.answer_col].tolist(), option_cols_present
-        )
-        plot_similarity_distributions(
-            corr, incorr,
-            method_name="TF-IDF", filename="tfidf_similarity_dist.png",
-        )
+        # ── Similarity distribution plot ──────────────────────────────────────
+        if run_sim_plots:
+            corr, incorr = _split_sim_scores(
+                val_scores, actuals, option_cols_present
+            )
+            plot_similarity_distributions(
+                corr, incorr,
+                method_name="TF-IDF", filename="tfidf_similarity_dist.png",
+            )
 
+    # NOTE: do NOT call finish_run here — the run is closed in print_summary
+    # after all phases have completed so that late metric pushes still land.
     return ranker, scores, met
 
 
@@ -292,11 +349,11 @@ def _fit_w2v(
     val_df     : "pd.DataFrame",
     option_cols: List[str],
     evaluator  : MAPAtKEvaluator,
-    wandb_run  : Optional[object],
+    wandb_run  : Optional[object],                 # ← received from caller
     scores     : Dict[str, Dict[str, np.ndarray]],
-):
+) -> Tuple[Word2VecRanker, Dict, Dict]:
     """
-    Train/load Word2Vec, score val+test, compute & log metrics, PCA plot.
+    Fit/load Word2Vec, score val+test, compute & log metrics.
 
     Kaggle cell usage
     -----------------
@@ -322,12 +379,10 @@ def _fit_w2v(
         answer_col=cfg.answer_col, split="w2v_val", wandb_run=None,
     )
 
-    # ── Log F1 / accuracy / precision / recall / MAP to word2vec W&B run ─────
+    # ── Log common metrics to the word2vec W&B run ────────────────────────────
     if cfg.answer_col in val_df.columns:
-        actuals   = val_df[cfg.answer_col].tolist()
-        clf_met   = evaluator.compute_classification_metrics(actuals, val_preds)
-        map_score = evaluator.mean_average_precision_at_k(actuals, val_preds)
-        log_model_metrics(wandb_run, {**clf_met, "map_at_k": map_score})
+        actuals = val_df[cfg.answer_col].tolist()
+        _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "Word2Vec")
 
     # ── PCA visualisation of word vectors ─────────────────────────────────────
     try:
@@ -340,6 +395,7 @@ def _fit_w2v(
     except Exception as exc:
         logger.warning(f"W2V PCA plot skipped: {exc}")
 
+    # NOTE: do NOT call finish_run here — closed in print_summary.
     return ranker, scores, met
 
 
@@ -349,12 +405,12 @@ def _fit_sbert(
     test_df      : "pd.DataFrame",
     option_cols  : List[str],
     evaluator    : MAPAtKEvaluator,
-    wandb_run    : Optional[object],
+    wandb_run    : Optional[object],               # ← received from caller
     scores       : Dict[str, Dict[str, np.ndarray]],
     run_sim_plots: bool,
-):
+) -> Tuple[SBERTRanker, Dict, Dict]:
     """
-    Load SBERT (pre-trained), score val+test, compute & log metrics.
+    Load SBERT, score val+test, compute & log metrics.
 
     Kaggle cell usage
     -----------------
@@ -379,23 +435,22 @@ def _fit_sbert(
         answer_col=cfg.answer_col, split="sbert_val", wandb_run=None,
     )
 
-    # ── Log F1 / accuracy / precision / recall / MAP to sbert W&B run ────────
+    # ── Log common metrics to the sbert W&B run ───────────────────────────────
     if cfg.answer_col in val_df.columns:
-        actuals   = val_df[cfg.answer_col].tolist()
-        clf_met   = evaluator.compute_classification_metrics(actuals, val_preds)
-        map_score = evaluator.mean_average_precision_at_k(actuals, val_preds)
-        log_model_metrics(wandb_run, {**clf_met, "map_at_k": map_score})
+        actuals = val_df[cfg.answer_col].tolist()
+        _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "SBERT")
 
-    # ── Similarity distribution plot ──────────────────────────────────────────
-    if run_sim_plots and cfg.answer_col in val_df.columns:
-        corr, incorr = _split_sim_scores(
-            val_scores, val_df[cfg.answer_col].tolist(), option_cols_present
-        )
-        plot_similarity_distributions(
-            corr, incorr,
-            method_name="SBERT", filename="sbert_similarity_dist.png",
-        )
+        # ── Similarity distribution plot ──────────────────────────────────────
+        if run_sim_plots:
+            corr, incorr = _split_sim_scores(
+                val_scores, actuals, option_cols_present
+            )
+            plot_similarity_distributions(
+                corr, incorr,
+                method_name="SBERT", filename="sbert_similarity_dist.png",
+            )
 
+    # NOTE: do NOT call finish_run here — closed in print_summary.
     return ranker, scores, met
 
 
@@ -500,19 +555,6 @@ def run_ensemble(
                 rank_dist["not_found"] += 1
         plot_rank_distribution(rank_dist, k=cfg.top_k)
 
-    # ── Log ensemble summary to ALL three W&B runs ────────────────────────────
-    if wandb_runs:
-        summary_payload = {
-            "phase1/tfidf_map3"   : map_scores["TF-IDF"],
-            "phase1/w2v_map3"     : map_scores["Word2Vec"],
-            "phase1/sbert_map3"   : map_scores["SBERT"],
-            "phase1/ensemble_map3": map_scores["Ensemble"],
-            "phase1/best_weights" : str(best_weights),
-        }
-        for run in wandb_runs.values():
-            if run is not None:
-                run.log(summary_payload)
-
     return ens_val_preds, ens_test_preds, map_scores
 
 
@@ -548,11 +590,11 @@ def print_summary(
     wandb_runs: Optional[Dict[str, Optional[object]]] = None,
 ) -> None:
     """
-    Log formatted summary table and close all W&B runs.
+    Print final MAP@K table and close every W&B run.
 
-    Kaggle cell usage
-    -----------------
-        print_summary(map_scores, cfg, wandb_runs)
+    All three runs are closed here (not inside the _fit_* helpers) so that
+    any metrics pushed during the ensemble phase are still captured before
+    the run is marked finished.
     """
     sep = "═" * 52
     logger.info(f"\n{sep}\n  PHASE 1 SUMMARY\n{sep}")
@@ -561,8 +603,9 @@ def print_summary(
     logger.info(sep)
 
     if wandb_runs:
-        for run in wandb_runs.values():
+        for run_key, run in wandb_runs.items():
             finish_run(run)
+            logger.info(f"W&B run '{run_key}' closed.")
         logger.info("All W&B runs closed.")
 
 
@@ -585,7 +628,7 @@ def run_full_pipeline(
         from main import run_full_pipeline
         results = run_full_pipeline()
     """
-    # 0. Setup
+    # 0. Setup — returns cfg, wandb_runs (3 live runs), evaluator
     cfg, wandb_runs, evaluator = setup(run_name=run_name)
 
     # 1. Data
@@ -593,17 +636,27 @@ def run_full_pipeline(
         cfg, run_eda_plots=run_eda_plots
     )
 
-    # 2. Models
+    # 2. Models — wandb_runs passed explicitly so each helper receives its run
     models, scores = train_models(
-        cfg, fit_df, val_df, test_df,
-        option_cols, evaluator, wandb_runs,
-        run_sim_plots=run_sim_plots,
+        cfg           = cfg,
+        fit_df        = fit_df,
+        val_df        = val_df,
+        test_df       = test_df,
+        option_cols   = option_cols,
+        evaluator     = evaluator,
+        wandb_runs    = wandb_runs,
+        run_sim_plots = run_sim_plots,
     )
 
     # 3. Ensemble
     ens_val_preds, ens_test_preds, map_scores = run_ensemble(
-        cfg, scores, val_df, option_cols, evaluator,
-        wandb_runs, run_plots=run_ensemble_plots,
+        cfg         = cfg,
+        scores      = scores,
+        val_df      = val_df,
+        option_cols = option_cols,
+        evaluator   = evaluator,
+        wandb_runs  = wandb_runs,
+        run_plots   = run_ensemble_plots,
     )
 
     # 4. Submission
@@ -611,7 +664,7 @@ def run_full_pipeline(
         cfg, test_df, ens_test_preds, filename=submission_filename
     )
 
-    # 5. Summary
+    # 5. Summary — also closes all W&B runs
     print_summary(map_scores, cfg, wandb_runs)
 
     return {
