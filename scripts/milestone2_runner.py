@@ -71,7 +71,6 @@ def _wandb_log(run, metrics: dict) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Inline minimal Evaluator
 # ─────────────────────────────────────────────────────────────────────────────
-
 class _Evaluator:
     """Self-contained evaluator (no external dependency needed)."""
 
