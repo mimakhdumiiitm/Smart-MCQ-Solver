@@ -477,8 +477,6 @@ def run_ensemble(
             cfg, scores, val_df, option_cols, evaluator, wandb_runs
         )
     """
-    if wandb_runs is None:
-        wandb_runs = {}
 
     actuals = val_df[cfg.answer_col].tolist()
 
