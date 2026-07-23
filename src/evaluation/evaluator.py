@@ -8,6 +8,12 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from sklearn.metrics import (
+    f1_score,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    )
 logger = logging.getLogger("Evaluator")
 
 # W&B is optional; import lazily to avoid hard dependency
@@ -166,3 +172,26 @@ class MAPAtKEvaluator:
         assert abs(map_val - expected) < 1e-9
 
         logger.info("All MAP@3 unit tests passed ✓")
+
+     # updated 
+    def compute_classification_metrics(
+        self,
+        actuals   : List[str],
+        predictions: List[List[str]],
+    ) -> Dict[str, float]:
+
+        # Use only the top-1 prediction for classification metrics
+        top1_preds = [p[0] if p else "" for p in predictions]
+
+        return {
+            "f1_score" : f1_score(
+                actuals, top1_preds, average="macro", zero_division=0
+            ),
+            "accuracy" : accuracy_score(actuals, top1_preds),
+            "precision": precision_score(
+                actuals, top1_preds, average="macro", zero_division=0
+            ),
+            "recall"   : recall_score(
+                actuals, top1_preds, average="macro", zero_division=0
+            ),
+        }
