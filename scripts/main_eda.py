@@ -312,7 +312,6 @@ def _fit_tfidf(
 
     return ranker, scores, met
 
-
 def _fit_w2v(
     cfg        : Config,
     fit_df     : "pd.DataFrame",
@@ -376,38 +375,36 @@ def _fit_w2v(
 
     return ranker, scores, met
 
-
-def _fit_w2v(
-    cfg        : Config,
-    fit_df     : "pd.DataFrame",
-    test_df    : "pd.DataFrame",
-    val_df     : "pd.DataFrame",
-    option_cols: List[str],
-    evaluator  : MAPAtKEvaluator,
-    scores     : Dict[str, Dict[str, np.ndarray]],
-) -> Tuple[Word2VecRanker, Dict, Dict]:
+def _fit_sbert(
+    cfg          : Config,
+    val_df       : "pd.DataFrame",
+    test_df      : "pd.DataFrame",
+    option_cols  : List[str],
+    evaluator    : MAPAtKEvaluator,
+    scores       : Dict[str, Dict[str, np.ndarray]],
+    run_sim_plots: bool,
+) -> Tuple[SBERTRanker, Dict, Dict]:
     """
-    Fit/load Word2Vec, score val+test, compute & log metrics.
+    Load SBERT, score val+test, compute & log metrics.
     Opens its own W&B run, logs, then closes it before returning.
 
     Kaggle cell usage
     -----------------
-        w2v_ranker, scores, w2v_met = _fit_w2v(
-            cfg, fit_df, test_df, val_df, option_cols,
-            evaluator, scores
+        sbert_ranker, scores, sbert_met = _fit_sbert(
+            cfg, val_df, test_df, option_cols,
+            evaluator, scores, run_sim_plots=True
         )
     """
-    # ── Open a fresh W&B run just for Word2Vec ────────────────────────────────
-    wandb_run = init_wandb(cfg, run_name="phase1-word2vec", model_tag="word2vec")
+    # ── Open a fresh W&B run just for SBERT ──────────────────────────────────
+    wandb_run = init_wandb(cfg, run_name="phase1-sbert", model_tag="sbert")
 
     try:
-        ranker = Word2VecRanker(cfg)
-        ranker.fit_or_load(fit_df, test_df)
+        ranker = SBERTRanker(cfg)
 
         val_scores  = ranker.predict_scores(val_df)
         test_scores = ranker.predict_scores(test_df)
-        scores["val"]["w2v"]  = val_scores
-        scores["test"]["w2v"] = test_scores
+        scores["val"]["sbert"]  = val_scores
+        scores["test"]["sbert"] = test_scores
 
         option_cols_present = [c for c in cfg.options if c in val_df.columns]
         val_preds = evaluator.scores_to_top_k_predictions(
@@ -416,30 +413,27 @@ def _fit_w2v(
 
         met = evaluator.evaluate(
             val_df, val_preds,
-            answer_col=cfg.answer_col, split="w2v_val", wandb_run=None,
+            answer_col=cfg.answer_col, split="sbert_val", wandb_run=None,
         )
 
         if cfg.answer_col in val_df.columns:
             actuals = val_df[cfg.answer_col].tolist()
-            _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "Word2Vec")
+            _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "SBERT")
 
-        # ── PCA visualisation ─────────────────────────────────────────────────
-        try:
-            from sklearn.decomposition import PCA
-            vocab_words = list(ranker.model.wv.key_to_index.keys())[:300]
-            word_matrix = np.array([ranker.model.wv[w] for w in vocab_words])
-            pca         = PCA(n_components=2, random_state=cfg.seed)
-            reduced     = pca.fit_transform(word_matrix)
-            plot_w2v_pca(reduced, vocab_words, n_label=50)
-        except Exception as exc:
-            logger.warning(f"W2V PCA plot skipped: {exc}")
+            if run_sim_plots:
+                corr, incorr = _split_sim_scores(
+                    val_scores, actuals, option_cols_present
+                )
+                plot_similarity_distributions(
+                    corr, incorr,
+                    method_name="SBERT", filename="sbert_similarity_dist.png",
+                )
 
     finally:
         finish_run(wandb_run)
-        logger.info("W&B run 'word2vec' closed.")
+        logger.info("W&B run 'sbert' closed.")
 
     return ranker, scores, met
-
 
 def _split_sim_scores(
     score_matrix: np.ndarray,
