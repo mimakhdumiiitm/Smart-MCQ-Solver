@@ -1,5 +1,3 @@
-# milestone2_runner.py
-
 from __future__ import annotations
 
 import logging
@@ -26,32 +24,94 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# W&B helpers
+# W&B helpers  (delegate to utils/wandb_init.py where possible)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _wandb_init(project: str, run_name: str, config_dict: dict):
+try:
+    from utils.wandb_init import (
+        init_wandb,
+        log_model_metrics,
+        finish_run,
+        _WANDB_AVAILABLE,
+        REQUIRED_METRICS,
+        COMPARABLE_MODELS,
+    )
+    _WANDB_UTILS_AVAILABLE = True
+    logger.info("[W&B] utils/wandb_init imported successfully.")
+except ImportError:
+    _WANDB_UTILS_AVAILABLE = False
+    logger.warning(
+        "[W&B] utils/wandb_init not found – falling back to inline helpers."
+    )
+
+
+def _wandb_init(
+    project    : str,
+    run_name   : str,
+    config_dict: dict,
+    cfg        = None,
+    model_tag  : str = "custom",
+) -> object:
     """
-    Start a W&B run.  Returns the run object (or a dummy if W&B is absent).
+    Start a W&B run.
+
+    Strategy
+    ────────
+    • If utils/wandb_init is available AND cfg is supplied AND model_tag is a
+      recognised phase-1 baseline tag → delegate to ``init_wandb``.
+    • Otherwise fall back to the inline wandb.init call (preserves behaviour
+      for zero-shot / transformer runs that are not covered by init_wandb).
+
+    Returns the run object (or None if W&B is absent / disabled).
     """
+    # ── delegate path ────────────────────────────────────────────────────────
+    if _WANDB_UTILS_AVAILABLE and cfg is not None and model_tag in COMPARABLE_MODELS:
+        try:
+            run = init_wandb(cfg, run_name=run_name, model_tag=model_tag)
+            if run is not None:
+                logger.info(f"[W&B] Run started via init_wandb → {run.url}")
+            return run
+        except Exception as exc:
+            logger.warning(
+                f"[W&B] init_wandb failed ({exc}). Trying inline fallback."
+            )
+
+    # ── inline fallback ──────────────────────────────────────────────────────
     try:
         import wandb
         run = wandb.init(
-            project   = project,
-            name      = run_name,
-            config    = config_dict,
-            reinit    = True,        # allow multiple runs in one process/notebook
+            project = project,
+            name    = run_name,
+            config  = config_dict,
+            reinit  = True,
         )
-        logger.info(f"[W&B] Run started → {run.url}")
+        logger.info(f"[W&B] Run started (inline) → {run.url}")
         return run
     except Exception as exc:
-        logger.warning(f"[W&B] wandb.init failed ({exc}). Metrics will not be uploaded.")
+        logger.warning(
+            f"[W&B] wandb.init failed ({exc}). Metrics will not be uploaded."
+        )
         return None
 
 
 def _wandb_finish(run) -> None:
-    """Safely finish a W&B run."""
+    """
+    Safely finish a W&B run.
+
+    Delegates to ``finish_run`` from utils/wandb_init when available,
+    otherwise falls back to inline call.
+    """
     if run is None:
         return
+
+    if _WANDB_UTILS_AVAILABLE:
+        try:
+            finish_run(run)
+            return
+        except Exception as exc:
+            logger.warning(f"[W&B] finish_run() failed: {exc}")
+
+    # inline fallback
     try:
         run.finish()
         logger.info("[W&B] Run finished.")
@@ -60,25 +120,71 @@ def _wandb_finish(run) -> None:
 
 
 def _wandb_log(run, metrics: dict) -> None:
+    """
+    Log metrics to a W&B run.
+
+    Delegates to ``log_model_metrics`` from utils/wandb_init when available
+    (which also validates that REQUIRED_METRICS are present).
+    Falls back to inline run.log otherwise.
+    """
     if run is None:
         return
+
+    if _WANDB_UTILS_AVAILABLE:
+        try:
+            log_model_metrics(run, metrics)
+            return
+        except Exception as exc:
+            logger.warning(f"[W&B] log_model_metrics failed: {exc}")
+
+    # inline fallback
     try:
         run.log(metrics)
     except Exception as exc:
         logger.warning(f"[W&B] run.log failed: {exc}")
 
 
+def _build_required_metrics_payload(raw_metrics: dict) -> dict:
+    """
+    Map internal metric keys produced by ``_compute_metrics`` to the
+    canonical REQUIRED_METRICS names expected by utils/wandb_init:
+
+        map_at_3   → map_at_k
+        accuracy   → accuracy
+        f1_macro   → f1_score
+        precision  → precision   (if present)
+        recall     → recall      (if present)
+
+    Any extra keys are passed through unchanged.
+    """
+    mapping = {
+        "map_at_3": "map_at_k",
+        "f1_macro": "f1_score",
+    }
+    payload = {}
+    for k, v in raw_metrics.items():
+        payload[mapping.get(k, k)] = v
+
+    # Ensure all REQUIRED_METRICS keys exist (set to None if missing)
+    if _WANDB_UTILS_AVAILABLE:
+        for req in REQUIRED_METRICS:
+            payload.setdefault(req, None)
+
+    return payload
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Inline minimal Evaluator
 # ─────────────────────────────────────────────────────────────────────────────
+
 class _Evaluator:
     """Self-contained evaluator (no external dependency needed)."""
 
     def scores_to_top_k_predictions(
         self,
-        scores:      np.ndarray,
-        option_cols: List[str],
-        k:           int = 3,
+        scores      : np.ndarray,
+        option_cols : List[str],
+        k           : int = 3,
     ) -> List[List[str]]:
         preds = []
         for row in scores:
@@ -88,10 +194,10 @@ class _Evaluator:
 
     def evaluate(
         self,
-        df:    pd.DataFrame,
-        preds: List[List[str]],
+        df    : pd.DataFrame,
+        preds : List[List[str]],
         cfg,
-        split: str = "val",
+        split : str = "val",
     ) -> Dict[str, float]:
         if "answer" not in df.columns:
             logger.warning("No 'answer' column – MAP@3 set to 0.")
@@ -130,8 +236,8 @@ def _ensure_clean_cols(df: pd.DataFrame, option_cols: List[str]) -> pd.DataFrame
 
 def _auto_load_data(
     cfg,
-    val_df:  Optional[pd.DataFrame],
-    test_df: Optional[pd.DataFrame],
+    val_df  : Optional[pd.DataFrame],
+    test_df : Optional[pd.DataFrame],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     option_cols = cfg.options
 
@@ -147,12 +253,11 @@ def _auto_load_data(
         pass
 
     if val_df is None:
-        # Priority: artifact → cfg.output_dir → cfg.data_dir raw
-        processed_local     = cfg.output_dir / "train_processed.csv"
-        processed_artifact  = (
+        processed_local    = cfg.output_dir / "train_processed.csv"
+        processed_artifact = (
             ARTIFACT_DIR / "train_processed.csv" if ARTIFACT_DIR else None
         )
-        raw                 = cfg.data_dir / cfg.train_file
+        raw = cfg.data_dir / cfg.train_file
 
         if processed_artifact and processed_artifact.exists():
             logger.info(f"[artifact] Loading val_df from {processed_artifact}")
@@ -177,7 +282,7 @@ def _auto_load_data(
         processed_artifact = (
             ARTIFACT_DIR / "test_processed.csv" if ARTIFACT_DIR else None
         )
-        raw                = cfg.data_dir / cfg.test_file
+        raw = cfg.data_dir / cfg.test_file
 
         if processed_artifact and processed_artifact.exists():
             logger.info(f"[artifact] Loading test_df from {processed_artifact}")
@@ -215,14 +320,12 @@ def _load_baseline_scores(out_dir, provided) -> Dict[str, np.ndarray]:
 
     from pathlib import Path
 
-    ARTIFACT_SCORE_DIR = Path(
-        "/kaggle/input/project-artifacts/outputs"
-    )
+    ARTIFACT_SCORE_DIR = Path("/kaggle/input/project-artifacts/outputs")
 
     scores  = {}
     mapping = {
         "tfidf_val": "tfidf_val_scores.npy",
-        "w2v_val":   "w2v_val_scores.npy",
+        "w2v_val"  : "w2v_val_scores.npy",
         "sbert_val": "sbert_val_scores.npy",
     }
 
@@ -237,7 +340,9 @@ def _load_baseline_scores(out_dir, provided) -> Dict[str, np.ndarray]:
             scores[key] = np.load(artifact)
             logger.info(f"[baseline] Loaded {key} from artifact {artifact}")
         else:
-            logger.warning(f"[baseline] {filename} not found locally or in artifact.")
+            logger.warning(
+                f"[baseline] {filename} not found locally or in artifact."
+            )
 
     return scores
 
@@ -260,7 +365,7 @@ def _run_zero_shot(cfg, val_df, test_df, wandb_run):
         return val_scores, test_scores
     except Exception as exc:
         logger.error(f"ZeroShotMCQRanker failed: {exc}")
-        dummy = np.zeros((len(val_df),  len(cfg.options)))
+        dummy = np.zeros((len(val_df), len(cfg.options)))
         return dummy, np.zeros((len(test_df), len(cfg.options)))
 
 
@@ -279,7 +384,7 @@ def _run_transformer_embeddings(cfg, val_df, test_df, wandb_run):
         return val_scores, test_scores
     except Exception as exc:
         logger.error(f"TransformerEmbeddingRanker failed: {exc}")
-        dummy = np.zeros((len(val_df),  len(cfg.options)))
+        dummy = np.zeros((len(val_df), len(cfg.options)))
         return dummy, np.zeros((len(test_df), len(cfg.options)))
 
 
@@ -292,10 +397,10 @@ def _print_comparison_table(all_metrics: Dict[str, dict]) -> None:
     for method, m in all_metrics.items():
         rows.append(
             {
-                "Method":   method,
-                "MAP@3":    m.get("map_at_3",  float("nan")),
-                "Accuracy": m.get("accuracy",  float("nan")),
-                "F1 (macro)": m.get("f1_macro", float("nan")),
+                "Method"    : method,
+                "MAP@3"     : m.get("map_at_3",  float("nan")),
+                "Accuracy"  : m.get("accuracy",  float("nan")),
+                "F1 (macro)": m.get("f1_macro",  float("nan")),
             }
         )
     df = (
@@ -305,7 +410,9 @@ def _print_comparison_table(all_metrics: Dict[str, dict]) -> None:
     )
     for col in ["MAP@3", "Accuracy", "F1 (macro)"]:
         df[col] = df[col].map(
-            lambda x: f"{x:.4f}" if not (isinstance(x, float) and np.isnan(x)) else "N/A"
+            lambda x: f"{x:.4f}"
+            if not (isinstance(x, float) and np.isnan(x))
+            else "N/A"
         )
 
     sep = "─" * 68
@@ -321,35 +428,37 @@ def _print_comparison_table(all_metrics: Dict[str, dict]) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_milestone2(
-    cfg              = None,
-    val_df           : Optional[pd.DataFrame]           = None,
-    test_df          : Optional[pd.DataFrame]           = None,
-    evaluator                                           = None,
-    option_cols      : Optional[List[str]]              = None,
-    baseline_scores  : Optional[Dict[str, np.ndarray]] = None,
-    wandb_project    : str                              = "smart-mcq-solver",
-    wandb_api_key    : Optional[str]                   = None,
+    cfg             = None,
+    val_df          : Optional[pd.DataFrame]           = None,
+    test_df         : Optional[pd.DataFrame]           = None,
+    evaluator                                          = None,
+    option_cols     : Optional[List[str]]              = None,
+    baseline_scores : Optional[Dict[str, np.ndarray]] = None,
+    wandb_project   : str                              = "smart-mcq-solver",
+    wandb_api_key   : Optional[str]                   = None,
 ) -> Dict[str, Any]:
     """
     Run the full Milestone 2 pipeline.
 
     Parameters
     ──────────
-    cfg            : Config object (built automatically if None)
-    val_df         : Validation DataFrame (auto-loaded if None)
-    test_df        : Test DataFrame (auto-loaded if None)
-    evaluator      : Evaluator instance (built-in _Evaluator used if None)
-    option_cols    : e.g. ['A','B','C','D','E']
-    baseline_scores: dict of Phase-1 .npy arrays (auto-loaded if None)
-    wandb_project  : W&B project name
-    wandb_api_key  : W&B API key (set WANDB_API_KEY env var as alternative)
+    cfg             : Config object (built automatically if None)
+    val_df          : Validation DataFrame (auto-loaded if None)
+    test_df         : Test DataFrame (auto-loaded if None)
+    evaluator       : Evaluator instance (built-in _Evaluator used if None)
+    option_cols     : e.g. ['A','B','C','D','E']
+    baseline_scores : dict of Phase-1 .npy arrays (auto-loaded if None)
+    wandb_project   : W&B project name
+    wandb_api_key   : W&B API key (set WANDB_API_KEY env var as alternative)
     """
 
     # ── 0. W&B login ─────────────────────────────────────────────────────────
+    # If an API key was supplied explicitly, honour it regardless of which
+    # W&B helper path we end up taking later.
     if wandb_api_key:
         try:
-            import wandb
-            wandb.login(key=wandb_api_key, relogin=True)
+            import wandb as _wandb
+            _wandb.login(key=wandb_api_key, relogin=True)
             logger.info("[W&B] Logged in with provided API key.")
         except Exception as exc:
             logger.warning(f"[W&B] Login failed: {exc}")
@@ -380,21 +489,23 @@ def run_milestone2(
     # ─────────────────────────────────────────────────────────────────────────
     # RUN 1 : Zero-Shot NLI
     # ─────────────────────────────────────────────────────────────────────────
-    logger.info("\n" + "═"*60)
+    logger.info("\n" + "═" * 60)
     logger.info("  W&B RUN 1 – Zero-Shot NLI Ranker")
-    logger.info("═"*60)
+    logger.info("═" * 60)
 
     zs_run = _wandb_init(
         project     = wandb_project,
         run_name    = "zero_shot_nli",
         config_dict = {
-            "model_type":   "zero_shot_nli",
-            "model_key":    cfg.zs_model_key,
-            "batch_size":   cfg.batch_size,
-            "n_val":        len(val_df),
-            "n_test":       len(test_df),
-            "option_cols":  option_cols,
+            "model_type"  : "zero_shot_nli",
+            "model_key"   : cfg.zs_model_key,
+            "batch_size"  : cfg.batch_size,
+            "n_val"       : len(val_df),
+            "n_test"      : len(test_df),
+            "option_cols" : option_cols,
         },
+        cfg       = cfg,
+        model_tag = "zero_shot_nli",   # not in COMPARABLE_MODELS → inline path
     )
 
     try:
@@ -416,10 +527,14 @@ def run_milestone2(
             logger.info(f"[M2] Zero-shot scores saved → {out}")
             _wandb_log(zs_run, {"cache_hit": False})
 
-        # compute & log metrics
-        zs_metrics = _compute_metrics(zs_val_scores, val_df, option_cols)
-        zs_tagged  = {f"zeroshot_val/{k}": v for k, v in zs_metrics.items()}
-        _wandb_log(zs_run, zs_tagged)
+        # Compute metrics then build a payload that satisfies REQUIRED_METRICS
+        zs_metrics         = _compute_metrics(zs_val_scores, val_df, option_cols)
+        zs_required        = _build_required_metrics_payload(zs_metrics)
+        zs_tagged          = {f"zeroshot_val/{k}": v for k, v in zs_metrics.items()}
+        zs_required_tagged = {f"zeroshot_val/{k}": v for k, v in zs_required.items()}
+
+        # log_model_metrics (via _wandb_log) validates REQUIRED_METRICS
+        _wandb_log(zs_run, zs_required_tagged)
 
         results["metrics"].update(zs_tagged)
         results["zs_val_scores"]  = zs_val_scores
@@ -437,22 +552,24 @@ def run_milestone2(
     # ─────────────────────────────────────────────────────────────────────────
     # RUN 2 : Transformer Embedding Ranker
     # ─────────────────────────────────────────────────────────────────────────
-    logger.info("\n" + "═"*60)
+    logger.info("\n" + "═" * 60)
     logger.info("  W&B RUN 2 – Transformer Embedding Ranker")
-    logger.info("═"*60)
+    logger.info("═" * 60)
 
     tr_run = _wandb_init(
         project     = wandb_project,
         run_name    = "transformer_embed",
         config_dict = {
-            "model_type":  "transformer_embedding",
-            "model_key":   cfg.tr_model_key,
-            "batch_size":  cfg.batch_size,
-            "max_length":  cfg.max_length,
-            "n_val":       len(val_df),
-            "n_test":      len(test_df),
-            "option_cols": option_cols,
+            "model_type"  : "transformer_embedding",
+            "model_key"   : cfg.tr_model_key,
+            "batch_size"  : cfg.batch_size,
+            "max_length"  : cfg.max_length,
+            "n_val"       : len(val_df),
+            "n_test"      : len(test_df),
+            "option_cols" : option_cols,
         },
+        cfg       = cfg,
+        model_tag = "transformer_embedding",  # not in COMPARABLE_MODELS → inline
     )
 
     try:
@@ -474,9 +591,12 @@ def run_milestone2(
             logger.info(f"[M2] Transformer scores saved → {out}")
             _wandb_log(tr_run, {"cache_hit": False})
 
-        tr_metrics = _compute_metrics(transformer_val_scores, val_df, option_cols)
-        tr_tagged  = {f"transformer_val/{k}": v for k, v in tr_metrics.items()}
-        _wandb_log(tr_run, tr_tagged)
+        tr_metrics         = _compute_metrics(transformer_val_scores, val_df, option_cols)
+        tr_required        = _build_required_metrics_payload(tr_metrics)
+        tr_tagged          = {f"transformer_val/{k}": v for k, v in tr_metrics.items()}
+        tr_required_tagged = {f"transformer_val/{k}": v for k, v in tr_required.items()}
+
+        _wandb_log(tr_run, tr_required_tagged)
 
         results["metrics"].update(tr_tagged)
         results["transformer_val_scores"]  = transformer_val_scores
@@ -493,63 +613,104 @@ def run_milestone2(
 
     # ─────────────────────────────────────────────────────────────────────────
     # RUN 3 : Phase-1 Baselines comparison
+    #
+    # Each baseline maps to a tag in COMPARABLE_MODELS so _wandb_init will
+    # delegate to init_wandb (Kaggle-secret auth, group="phase1-model-
+    # comparison", job_type=model_tag, tags=[…]).
     # ─────────────────────────────────────────────────────────────────────────
-    logger.info("\n" + "═"*60)
+    logger.info("\n" + "═" * 60)
     logger.info("  W&B RUN 3 – Phase-1 Baseline Comparison")
-    logger.info("═"*60)
+    logger.info("═" * 60)
 
-    bl_run = _wandb_init(
-        project     = wandb_project,
-        run_name    = "baseline_compare",
-        config_dict = {
-            "model_type":      "phase1_baselines",
-            "baselines_found": list(baseline_scores.keys()),
-            "n_val":           len(val_df),
-            "option_cols":     option_cols,
-        },
-    )
+    # Mapping: score-dict key → (display tag, COMPARABLE_MODELS tag)
+    baseline_tag_map = {
+        "tfidf_val": ("TF-IDF",   "tfidf"),
+        "w2v_val"  : ("Word2Vec", "word2vec"),
+        "sbert_val": ("SBERT",    "sbert"),
+    }
 
-    try:
-        baseline_tag_map = {
-            "tfidf_val": "TF-IDF",
-            "w2v_val":   "Word2Vec",
-            "sbert_val": "SBERT",
-        }
+    # Collect rows for the W&B comparison table (built after all 3 runs)
+    wandb_table_rows: List[list] = []
 
-        for key, tag in baseline_tag_map.items():
-            if key not in baseline_scores:
-                logger.warning(f"[baseline] {key} scores not available – skipping.")
-                continue
+    for key, (display_tag, model_tag) in baseline_tag_map.items():
+        if key not in baseline_scores:
+            logger.warning(f"[baseline] {key} scores not available – skipping.")
+            continue
 
-            bm = _compute_metrics(baseline_scores[key], val_df, option_cols)
-            tagged = {f"{tag}_val/{k}": v for k, v in bm.items()}
-            _wandb_log(bl_run, tagged)
+        # One W&B run per baseline model (matches init_wandb's design intent)
+        bl_run = _wandb_init(
+            project     = wandb_project,
+            run_name    = f"baseline_{model_tag}",
+            config_dict = {
+                "model_type"      : "phase1_baseline",
+                "model_tag"       : model_tag,
+                "baselines_found" : list(baseline_scores.keys()),
+                "n_val"           : len(val_df),
+                "option_cols"     : option_cols,
+            },
+            cfg       = cfg,
+            model_tag = model_tag,   # in COMPARABLE_MODELS → uses init_wandb
+        )
+
+        try:
+            bm          = _compute_metrics(baseline_scores[key], val_df, option_cols)
+            bm_required = _build_required_metrics_payload(bm)
+
+            # log_model_metrics validates REQUIRED_METRICS before uploading
+            _wandb_log(bl_run, bm_required)
+
+            # also store with display-tag namespace in results dict
+            tagged = {f"{display_tag}_val/{k}": v for k, v in bm.items()}
             results["metrics"].update(tagged)
-            all_method_metrics[tag] = bm
+            all_method_metrics[display_tag] = bm
+
+            wandb_table_rows.append(
+                [display_tag, bm["map_at_3"], bm["accuracy"], bm["f1_macro"]]
+            )
 
             print(
-                f"[M2] {tag:<10} MAP@3={bm['map_at_3']:.4f} "
+                f"[M2] {display_tag:<10} MAP@3={bm['map_at_3']:.4f} "
                 f"| Acc={bm['accuracy']:.4f} "
                 f"| F1={bm['f1_macro']:.4f}"
             )
+        finally:
+            _wandb_finish(bl_run)
 
-        # ── summary table logged as W&B Table ────────────────────────────────
+    # ── summary W&B Table (logged to a dedicated lightweight run) ─────────────
+    bl_summary_run = _wandb_init(
+        project     = wandb_project,
+        run_name    = "baseline_compare_summary",
+        config_dict = {
+            "model_type"      : "phase1_baselines_summary",
+            "baselines_found" : list(baseline_scores.keys()),
+            "n_val"           : len(val_df),
+            "option_cols"     : option_cols,
+        },
+        cfg       = cfg,
+        model_tag = "summary",   # not in COMPARABLE_MODELS → inline path
+    )
+
+    try:
         try:
-            import wandb
-            rows = [
-                [method, m["map_at_3"], m["accuracy"], m["f1_macro"]]
-                for method, m in all_method_metrics.items()
-            ]
-            tbl = wandb.Table(
-                columns=["Method", "MAP@3", "Accuracy", "F1_macro"],
-                data=rows,
+            import wandb as _wandb
+            # Include Milestone-2 models in the comparison table as well
+            for method, m in all_method_metrics.items():
+                if method not in {t for t, _ in baseline_tag_map.values()}:
+                    wandb_table_rows.append(
+                        [method, m["map_at_3"], m["accuracy"], m["f1_macro"]]
+                    )
+
+            tbl = _wandb.Table(
+                columns = ["Method", "MAP@3", "Accuracy", "F1_macro"],
+                data    = wandb_table_rows,
             )
-            bl_run.log({"comparison_table": tbl})
+            if bl_summary_run is not None:
+                bl_summary_run.log({"comparison_table": tbl})
+                logger.info("[W&B] Comparison table logged.")
         except Exception as exc:
             logger.warning(f"[W&B] Could not log comparison table: {exc}")
-
     finally:
-        _wandb_finish(bl_run)
+        _wandb_finish(bl_summary_run)
 
     # ── 6. Print final comparison table ──────────────────────────────────────
     _print_comparison_table(all_method_metrics)
