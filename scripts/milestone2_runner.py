@@ -1,3 +1,5 @@
+# milestone2_runner.py
+
 from __future__ import annotations
 
 import logging
@@ -29,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from utils.wandb_init import (
+        authenticate,           # ← the safe, non-interactive auth helper
         init_wandb,
         log_model_metrics,
         finish_run,
@@ -45,6 +48,58 @@ except ImportError:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# One-time authentication
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _do_wandb_auth(api_key: Optional[str] = None) -> None:
+    """
+    Authenticate with W&B exactly once before any run is created.
+
+    Priority
+    ────────
+    1. api_key argument (caller-supplied)
+    2. authenticate()  from utils/wandb_init  (Kaggle Secrets → env var → netrc)
+    3. Inline env-var / netrc fallback (no interactive prompt)
+    """
+    if not _WANDB_UTILS_AVAILABLE:
+        # Best-effort non-interactive login when the util module is absent
+        if api_key:
+            try:
+                import wandb
+                wandb.login(key=api_key, relogin=True)
+                logger.info("[W&B] Logged in with provided API key (inline).")
+            except Exception as exc:
+                logger.warning(f"[W&B] Login failed: {exc}")
+        else:
+            try:
+                import wandb
+                wandb.login(anonymous="never", relogin=False)
+            except Exception as exc:
+                logger.warning(f"[W&B] Login failed: {exc}")
+        return
+
+    # ── utils/wandb_init is available ────────────────────────────────────────
+    if api_key:
+        try:
+            import wandb
+            wandb.login(key=api_key, relogin=True)
+            logger.info("[W&B] Logged in with caller-supplied API key.")
+            return
+        except Exception as exc:
+            logger.warning(
+                f"[W&B] Login with supplied key failed ({exc}). "
+                "Trying authenticate()."
+            )
+
+    # Kaggle Secrets → env var → netrc  (never interactive)
+    authenticate()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-run W&B helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _wandb_init(
     project    : str,
     run_name   : str,
@@ -55,16 +110,11 @@ def _wandb_init(
     """
     Start a W&B run.
 
-    Strategy
-    ────────
-    • If utils/wandb_init is available AND cfg is supplied AND model_tag is a
-      recognised phase-1 baseline tag → delegate to ``init_wandb``.
-    • Otherwise fall back to the inline wandb.init call (preserves behaviour
-      for zero-shot / transformer runs that are not covered by init_wandb).
-
-    Returns the run object (or None if W&B is absent / disabled).
+    • model_tag in COMPARABLE_MODELS → delegates to init_wandb()
+      (Kaggle-secret auth, group, job_type, tags — designed for phase-1 baselines)
+    • everything else               → inline wandb.init() fallback
+    Auth has already been performed by _do_wandb_auth(); no login() call here.
     """
-    # ── delegate path ────────────────────────────────────────────────────────
     if _WANDB_UTILS_AVAILABLE and cfg is not None and model_tag in COMPARABLE_MODELS:
         try:
             run = init_wandb(cfg, run_name=run_name, model_tag=model_tag)
@@ -76,7 +126,7 @@ def _wandb_init(
                 f"[W&B] init_wandb failed ({exc}). Trying inline fallback."
             )
 
-    # ── inline fallback ──────────────────────────────────────────────────────
+    # ── inline fallback (auth already done) ──────────────────────────────────
     try:
         import wandb
         run = wandb.init(
@@ -95,23 +145,14 @@ def _wandb_init(
 
 
 def _wandb_finish(run) -> None:
-    """
-    Safely finish a W&B run.
-
-    Delegates to ``finish_run`` from utils/wandb_init when available,
-    otherwise falls back to inline call.
-    """
     if run is None:
         return
-
     if _WANDB_UTILS_AVAILABLE:
         try:
             finish_run(run)
             return
         except Exception as exc:
             logger.warning(f"[W&B] finish_run() failed: {exc}")
-
-    # inline fallback
     try:
         run.finish()
         logger.info("[W&B] Run finished.")
@@ -120,24 +161,14 @@ def _wandb_finish(run) -> None:
 
 
 def _wandb_log(run, metrics: dict) -> None:
-    """
-    Log metrics to a W&B run.
-
-    Delegates to ``log_model_metrics`` from utils/wandb_init when available
-    (which also validates that REQUIRED_METRICS are present).
-    Falls back to inline run.log otherwise.
-    """
     if run is None:
         return
-
     if _WANDB_UTILS_AVAILABLE:
         try:
             log_model_metrics(run, metrics)
             return
         except Exception as exc:
             logger.warning(f"[W&B] log_model_metrics failed: {exc}")
-
-    # inline fallback
     try:
         run.log(metrics)
     except Exception as exc:
@@ -146,26 +177,22 @@ def _wandb_log(run, metrics: dict) -> None:
 
 def _build_required_metrics_payload(raw_metrics: dict) -> dict:
     """
-    Map internal metric keys produced by ``_compute_metrics`` to the
-    canonical REQUIRED_METRICS names expected by utils/wandb_init:
+    Translate _compute_metrics keys → REQUIRED_METRICS names.
 
-        map_at_3   → map_at_k
-        accuracy   → accuracy
-        f1_macro   → f1_score
-        precision  → precision   (if present)
-        recall     → recall      (if present)
+        map_at_3  → map_at_k
+        f1_macro  → f1_score
+        (others passed through unchanged)
 
-    Any extra keys are passed through unchanged.
+    Also seeds any still-missing REQUIRED_METRICS keys with None so that
+    log_model_metrics never raises a missing-key warning for values we
+    genuinely do not have.
     """
     mapping = {
         "map_at_3": "map_at_k",
         "f1_macro": "f1_score",
     }
-    payload = {}
-    for k, v in raw_metrics.items():
-        payload[mapping.get(k, k)] = v
+    payload = {mapping.get(k, k): v for k, v in raw_metrics.items()}
 
-    # Ensure all REQUIRED_METRICS keys exist (set to None if missing)
     if _WANDB_UTILS_AVAILABLE:
         for req in REQUIRED_METRICS:
             payload.setdefault(req, None)
@@ -241,7 +268,6 @@ def _auto_load_data(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     option_cols = cfg.options
 
-    # ── try artifact processed files first ───────────────────────────────────
     ARTIFACT_DIR = None
     try:
         from pathlib import Path
@@ -308,18 +334,10 @@ def _auto_load_data(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_baseline_scores(out_dir, provided) -> Dict[str, np.ndarray]:
-    """
-    Load Phase-1 baseline .npy score arrays.
-    Search order:
-      1. Caller-supplied dict (provided)
-      2. cfg.output_dir   (local run outputs)
-      3. Kaggle artifact  (/kaggle/input/project-artifacts/outputs/)
-    """
     if provided:
         return provided
 
     from pathlib import Path
-
     ARTIFACT_SCORE_DIR = Path("/kaggle/input/project-artifacts/outputs")
 
     scores  = {}
@@ -452,16 +470,10 @@ def run_milestone2(
     wandb_api_key   : W&B API key (set WANDB_API_KEY env var as alternative)
     """
 
-    # ── 0. W&B login ─────────────────────────────────────────────────────────
-    # If an API key was supplied explicitly, honour it regardless of which
-    # W&B helper path we end up taking later.
-    if wandb_api_key:
-        try:
-            import wandb as _wandb
-            _wandb.login(key=wandb_api_key, relogin=True)
-            logger.info("[W&B] Logged in with provided API key.")
-        except Exception as exc:
-            logger.warning(f"[W&B] Login failed: {exc}")
+    # ── 0. Authenticate ONCE before any wandb.init call ───────────────────────
+    # This is the only place login() is ever called; individual run helpers
+    # must NOT call wandb.login() themselves to avoid interactive prompts.
+    _do_wandb_auth(wandb_api_key)
 
     # ── 1. Config / evaluator defaults ───────────────────────────────────────
     if cfg is None:
@@ -481,7 +493,7 @@ def run_milestone2(
 
     out                = cfg.output_dir
     results            : Dict[str, Any]  = {"metrics": {}}
-    all_method_metrics : Dict[str, dict] = {}   # for comparison table
+    all_method_metrics : Dict[str, dict] = {}
 
     # ── 3. Phase-1 baseline scores ────────────────────────────────────────────
     baseline_scores = _load_baseline_scores(out, baseline_scores)
@@ -497,12 +509,12 @@ def run_milestone2(
         project     = wandb_project,
         run_name    = "zero_shot_nli",
         config_dict = {
-            "model_type"  : "zero_shot_nli",
-            "model_key"   : cfg.zs_model_key,
-            "batch_size"  : cfg.batch_size,
-            "n_val"       : len(val_df),
-            "n_test"      : len(test_df),
-            "option_cols" : option_cols,
+            "model_type" : "zero_shot_nli",
+            "model_key"  : cfg.zs_model_key,
+            "batch_size" : cfg.batch_size,
+            "n_val"      : len(val_df),
+            "n_test"     : len(test_df),
+            "option_cols": option_cols,
         },
         cfg       = cfg,
         model_tag = "zero_shot_nli",   # not in COMPARABLE_MODELS → inline path
@@ -527,16 +539,16 @@ def run_milestone2(
             logger.info(f"[M2] Zero-shot scores saved → {out}")
             _wandb_log(zs_run, {"cache_hit": False})
 
-        # Compute metrics then build a payload that satisfies REQUIRED_METRICS
         zs_metrics         = _compute_metrics(zs_val_scores, val_df, option_cols)
-        zs_required        = _build_required_metrics_payload(zs_metrics)
-        zs_tagged          = {f"zeroshot_val/{k}": v for k, v in zs_metrics.items()}
-        zs_required_tagged = {f"zeroshot_val/{k}": v for k, v in zs_required.items()}
-
-        # log_model_metrics (via _wandb_log) validates REQUIRED_METRICS
+        zs_required_tagged = {
+            f"zeroshot_val/{k}": v
+            for k, v in _build_required_metrics_payload(zs_metrics).items()
+        }
         _wandb_log(zs_run, zs_required_tagged)
 
-        results["metrics"].update(zs_tagged)
+        results["metrics"].update(
+            {f"zeroshot_val/{k}": v for k, v in zs_metrics.items()}
+        )
         results["zs_val_scores"]  = zs_val_scores
         results["zs_test_scores"] = zs_test_scores
         all_method_metrics["Zero-Shot NLI"] = zs_metrics
@@ -560,13 +572,13 @@ def run_milestone2(
         project     = wandb_project,
         run_name    = "transformer_embed",
         config_dict = {
-            "model_type"  : "transformer_embedding",
-            "model_key"   : cfg.tr_model_key,
-            "batch_size"  : cfg.batch_size,
-            "max_length"  : cfg.max_length,
-            "n_val"       : len(val_df),
-            "n_test"      : len(test_df),
-            "option_cols" : option_cols,
+            "model_type" : "transformer_embedding",
+            "model_key"  : cfg.tr_model_key,
+            "batch_size" : cfg.batch_size,
+            "max_length" : cfg.max_length,
+            "n_val"      : len(val_df),
+            "n_test"     : len(test_df),
+            "option_cols": option_cols,
         },
         cfg       = cfg,
         model_tag = "transformer_embedding",  # not in COMPARABLE_MODELS → inline
@@ -592,13 +604,15 @@ def run_milestone2(
             _wandb_log(tr_run, {"cache_hit": False})
 
         tr_metrics         = _compute_metrics(transformer_val_scores, val_df, option_cols)
-        tr_required        = _build_required_metrics_payload(tr_metrics)
-        tr_tagged          = {f"transformer_val/{k}": v for k, v in tr_metrics.items()}
-        tr_required_tagged = {f"transformer_val/{k}": v for k, v in tr_required.items()}
-
+        tr_required_tagged = {
+            f"transformer_val/{k}": v
+            for k, v in _build_required_metrics_payload(tr_metrics).items()
+        }
         _wandb_log(tr_run, tr_required_tagged)
 
-        results["metrics"].update(tr_tagged)
+        results["metrics"].update(
+            {f"transformer_val/{k}": v for k, v in tr_metrics.items()}
+        )
         results["transformer_val_scores"]  = transformer_val_scores
         results["transformer_test_scores"] = transformer_test_scores
         all_method_metrics["Transformer Embed"] = tr_metrics
@@ -612,24 +626,18 @@ def run_milestone2(
         _wandb_finish(tr_run)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # RUN 3 : Phase-1 Baselines comparison
-    #
-    # Each baseline maps to a tag in COMPARABLE_MODELS so _wandb_init will
-    # delegate to init_wandb (Kaggle-secret auth, group="phase1-model-
-    # comparison", job_type=model_tag, tags=[…]).
+    # RUN 3 : Phase-1 Baselines  (one W&B run per baseline model)
     # ─────────────────────────────────────────────────────────────────────────
     logger.info("\n" + "═" * 60)
     logger.info("  W&B RUN 3 – Phase-1 Baseline Comparison")
     logger.info("═" * 60)
 
-    # Mapping: score-dict key → (display tag, COMPARABLE_MODELS tag)
     baseline_tag_map = {
         "tfidf_val": ("TF-IDF",   "tfidf"),
         "w2v_val"  : ("Word2Vec", "word2vec"),
         "sbert_val": ("SBERT",    "sbert"),
     }
 
-    # Collect rows for the W&B comparison table (built after all 3 runs)
     wandb_table_rows: List[list] = []
 
     for key, (display_tag, model_tag) in baseline_tag_map.items():
@@ -637,7 +645,6 @@ def run_milestone2(
             logger.warning(f"[baseline] {key} scores not available – skipping.")
             continue
 
-        # One W&B run per baseline model (matches init_wandb's design intent)
         bl_run = _wandb_init(
             project     = wandb_project,
             run_name    = f"baseline_{model_tag}",
@@ -655,11 +662,8 @@ def run_milestone2(
         try:
             bm          = _compute_metrics(baseline_scores[key], val_df, option_cols)
             bm_required = _build_required_metrics_payload(bm)
-
-            # log_model_metrics validates REQUIRED_METRICS before uploading
             _wandb_log(bl_run, bm_required)
 
-            # also store with display-tag namespace in results dict
             tagged = {f"{display_tag}_val/{k}": v for k, v in bm.items()}
             results["metrics"].update(tagged)
             all_method_metrics[display_tag] = bm
@@ -676,7 +680,7 @@ def run_milestone2(
         finally:
             _wandb_finish(bl_run)
 
-    # ── summary W&B Table (logged to a dedicated lightweight run) ─────────────
+    # ── summary W&B Table ─────────────────────────────────────────────────────
     bl_summary_run = _wandb_init(
         project     = wandb_project,
         run_name    = "baseline_compare_summary",
@@ -687,19 +691,17 @@ def run_milestone2(
             "option_cols"     : option_cols,
         },
         cfg       = cfg,
-        model_tag = "summary",   # not in COMPARABLE_MODELS → inline path
+        model_tag = "summary",
     )
 
     try:
         try:
             import wandb as _wandb
-            # Include Milestone-2 models in the comparison table as well
             for method, m in all_method_metrics.items():
                 if method not in {t for t, _ in baseline_tag_map.values()}:
                     wandb_table_rows.append(
                         [method, m["map_at_3"], m["accuracy"], m["f1_macro"]]
                     )
-
             tbl = _wandb.Table(
                 columns = ["Method", "MAP@3", "Accuracy", "F1_macro"],
                 data    = wandb_table_rows,

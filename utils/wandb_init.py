@@ -24,15 +24,48 @@ REQUIRED_METRICS: List[str] = [
 COMPARABLE_MODELS: List[str] = ["tfidf", "word2vec", "sbert"]
 
 
-def _authenticate() -> None:
+def authenticate() -> None:                          # ← now PUBLIC (no underscore)
+    """
+    Authenticate with W&B.
+    Priority:
+      1. Kaggle Secrets  (WANDB_API_KEY)
+      2. WANDB_API_KEY   environment variable        (wandb picks it up automatically)
+      3. ~/.netrc        (already-logged-in machine)
+    Never falls back to interactive prompt.
+    """
+    if not _WANDB_AVAILABLE:
+        return
+
+    # ── 1. Kaggle Secrets ────────────────────────────────────────────────────
     try:
         from kaggle_secrets import UserSecretsClient
         key = UserSecretsClient().get_secret("WANDB_API_KEY")
-        wandb.login(key=key, relogin=True)
-        logger.info("W&B authenticated via Kaggle Secrets.")
+        if key:
+            wandb.login(key=key, relogin=True)
+            logger.info("W&B authenticated via Kaggle Secrets.")
+            return
     except Exception:
-        logger.info("Kaggle Secrets unavailable — trying env var / CLI.")
-        wandb.login()
+        pass  # not on Kaggle, or secret not set
+
+    # ── 2. Env var / netrc (non-interactive) ─────────────────────────────────
+    try:
+        # anonymous=False  → use existing creds or env-var key
+        # force=False      → don't re-prompt if already logged in
+        result = wandb.login(anonymous="never", relogin=False)
+        if result:
+            logger.info("W&B authenticated via env var / netrc.")
+        else:
+            logger.warning(
+                "W&B login returned False. "
+                "Set the WANDB_API_KEY environment variable or add the key "
+                "to Kaggle Secrets as 'WANDB_API_KEY'."
+            )
+    except Exception as exc:
+        logger.warning(f"W&B login failed: {exc}")
+
+
+# Keep old private name as an alias so nothing else breaks
+_authenticate = authenticate
 
 
 def init_wandb(
@@ -53,7 +86,7 @@ def init_wandb(
         return None
 
     try:
-        _authenticate()
+        authenticate()                               # ← uses the safe version
 
         run_config: Dict[str, Any] = {
             "model"              : model_tag,
@@ -73,7 +106,7 @@ def init_wandb(
             entity   = config.wandb_entity,
             name     = run_name,
             config   = run_config,
-            group    = "phase1-model-comparison",   # ties all 3 runs together
+            group    = "phase1-model-comparison",
             job_type = model_tag,
             reinit   = True,
             tags     = ["phase1", "baseline", model_tag],
@@ -110,9 +143,7 @@ def log_model_metrics(
 
     missing = [m for m in REQUIRED_METRICS if m not in metrics]
     if missing:
-        logger.warning(
-            f"[{run.name}] Missing required metrics: {missing}"
-        )
+        logger.warning(f"[{run.name}] Missing required metrics: {missing}")
 
     log_kwargs: Dict[str, Any] = dict(metrics)
     if step is not None:
