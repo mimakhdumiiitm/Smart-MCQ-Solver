@@ -45,19 +45,15 @@ logger = get_logger("Main")
 def setup(
     run_name          : str           = "phase1-baseline",
     use_wandb_override: Optional[bool] = None,
-) -> Tuple[Config, Dict[str, Optional[object]], MAPAtKEvaluator]:
+) -> Tuple[Config, MAPAtKEvaluator]:          # ← wandb_runs removed from return
     """
-    Initialise config, random seeds, one W&B run per model, and evaluator.
-
-    Returns
-    -------
-    cfg        : Config
-    wandb_runs : {"tfidf": run, "word2vec": run, "sbert": run}
-    evaluator  : MAPAtKEvaluator
+    Initialise config, random seeds, and evaluator.
+    W&B runs are now opened (and closed) inside each _fit_* helper,
+    so a stale/finished run can never be passed to log().
 
     Kaggle cell usage
     -----------------
-        cfg, wandb_runs, evaluator = setup()
+        cfg, evaluator = setup()
     """
     cfg = Config()
     set_seed(cfg.seed)
@@ -65,22 +61,11 @@ def setup(
     if use_wandb_override is not None:
         cfg.use_wandb = use_wandb_override
 
-    # ── One dedicated W&B run per model ───────────────────────────────────────
-    # All runs are initialised here so every model has a valid W&B run before
-    # any training begins.  Each run is grouped under "phase1-model-comparison"
-    # and shares the same common metric keys (accuracy, f1, precision, recall,
-    # map_at_k) so the W&B "compare runs" table works out of the box.
-    wandb_runs: Dict[str, Optional[object]] = {
-        "tfidf"   : init_wandb(cfg, run_name="phase1-tfidf",    model_tag="tfidf"),
-        "word2vec": init_wandb(cfg, run_name="phase1-word2vec", model_tag="word2vec"),
-        "sbert"   : init_wandb(cfg, run_name="phase1-sbert",    model_tag="sbert"),
-    }
-
     evaluator = MAPAtKEvaluator(k=cfg.top_k)
     MAPAtKEvaluator.run_unit_tests()
 
-    logger.info("Setup complete — W&B runs initialised for tfidf, word2vec, sbert.")
-    return cfg, wandb_runs, evaluator
+    logger.info("Setup complete.")
+    return cfg, evaluator                     
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -179,41 +164,22 @@ def train_models(
     test_df      : "pd.DataFrame",
     option_cols  : List[str],
     evaluator    : MAPAtKEvaluator,
-    wandb_runs   : Dict[str, Optional[object]],        # ← required, not optional
     run_sim_plots: bool = True,
 ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, np.ndarray]]]:
-    """
-    Fit (or load from cache) TF-IDF, Word2Vec, and SBERT rankers.
-    Each model logs its own metrics to its own W&B run.
-
-    Returns
-    -------
-    models : {"tfidf": TFIDFRanker, "w2v": Word2VecRanker, "sbert": SBERTRanker}
-    scores : {
-        "val" : {"tfidf": ndarray, "w2v": ndarray, "sbert": ndarray},
-        "test": {"tfidf": ndarray, "w2v": ndarray, "sbert": ndarray},
-    }
-
-    Kaggle cell usage
-    -----------------
-        models, scores = train_models(
-            cfg, fit_df, val_df, test_df,
-            option_cols, evaluator, wandb_runs
-        )
-    """
+    
     models : Dict[str, Any]                   = {}
     scores : Dict[str, Dict[str, np.ndarray]] = {"val": {}, "test": {}}
     metrics: Dict[str, Dict[str, float]]      = {}
 
     # ── TF-IDF ───────────────────────────────────────────────────────────────
+    # Run opens its own W&B run, logs, then closes before returning.
     models["tfidf"], scores, metrics["tfidf"] = _fit_tfidf(
-        cfg       = cfg,
-        fit_df    = fit_df,
-        val_df    = val_df,
-        test_df   = test_df,
+        cfg           = cfg,
+        fit_df        = fit_df,
+        val_df        = val_df,
+        test_df       = test_df,
         option_cols   = option_cols,
         evaluator     = evaluator,
-        wandb_run     = wandb_runs.get("tfidf"),
         scores        = scores,
         run_sim_plots = run_sim_plots,
     )
@@ -226,7 +192,6 @@ def train_models(
         val_df      = val_df,
         option_cols = option_cols,
         evaluator   = evaluator,
-        wandb_run   = wandb_runs.get("word2vec"),
         scores      = scores,
     )
 
@@ -237,7 +202,6 @@ def train_models(
         test_df       = test_df,
         option_cols   = option_cols,
         evaluator     = evaluator,
-        wandb_run     = wandb_runs.get("sbert"),
         scores        = scores,
         run_sim_plots = run_sim_plots,
     )
@@ -291,54 +255,61 @@ def _fit_tfidf(
     test_df      : "pd.DataFrame",
     option_cols  : List[str],
     evaluator    : MAPAtKEvaluator,
-    wandb_run    : Optional[object],               # ← received from caller
     scores       : Dict[str, Dict[str, np.ndarray]],
     run_sim_plots: bool,
 ) -> Tuple[TFIDFRanker, Dict, Dict]:
     """
     Fit/load TF-IDF, score val+test, compute & log metrics.
+    Opens its own W&B run, logs, then closes it before returning.
 
     Kaggle cell usage
     -----------------
         tfidf_ranker, scores, tfidf_met = _fit_tfidf(
             cfg, fit_df, val_df, test_df, option_cols,
-            evaluator, wandb_runs["tfidf"], scores, run_sim_plots=True
+            evaluator, scores, run_sim_plots=True
         )
     """
-    ranker = TFIDFRanker(cfg)
-    ranker.fit_or_load(fit_df)
+    # ── Open a fresh W&B run just for TF-IDF ─────────────────────────────────
+    wandb_run = init_wandb(cfg, run_name="phase1-tfidf", model_tag="tfidf")
 
-    val_scores  = ranker.predict_scores(val_df)
-    test_scores = ranker.predict_scores(test_df)
-    scores["val"]["tfidf"]  = val_scores
-    scores["test"]["tfidf"] = test_scores
+    try:
+        ranker = TFIDFRanker(cfg)
+        ranker.fit_or_load(fit_df)
 
-    option_cols_present = [c for c in cfg.options if c in val_df.columns]
-    val_preds = evaluator.scores_to_top_k_predictions(val_scores, option_cols_present)
+        val_scores  = ranker.predict_scores(val_df)
+        test_scores = ranker.predict_scores(test_df)
+        scores["val"]["tfidf"]  = val_scores
+        scores["test"]["tfidf"] = test_scores
 
-    # MAP metric
-    met = evaluator.evaluate(
-        val_df, val_preds,
-        answer_col=cfg.answer_col, split="tfidf_val", wandb_run=None,
-    )
+        option_cols_present = [c for c in cfg.options if c in val_df.columns]
+        val_preds = evaluator.scores_to_top_k_predictions(
+            val_scores, option_cols_present
+        )
 
-    # ── Log common metrics to the tfidf W&B run ───────────────────────────────
-    if cfg.answer_col in val_df.columns:
-        actuals = val_df[cfg.answer_col].tolist()
-        _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "TF-IDF")
+        met = evaluator.evaluate(
+            val_df, val_preds,
+            answer_col=cfg.answer_col, split="tfidf_val", wandb_run=None,
+        )
 
-        # ── Similarity distribution plot ──────────────────────────────────────
-        if run_sim_plots:
-            corr, incorr = _split_sim_scores(
-                val_scores, actuals, option_cols_present
-            )
-            plot_similarity_distributions(
-                corr, incorr,
-                method_name="TF-IDF", filename="tfidf_similarity_dist.png",
-            )
+        if cfg.answer_col in val_df.columns:
+            actuals = val_df[cfg.answer_col].tolist()
+            # wandb_run is guaranteed fresh here — log is safe
+            _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "TF-IDF")
 
-    # NOTE: do NOT call finish_run here — the run is closed in print_summary
-    # after all phases have completed so that late metric pushes still land.
+            if run_sim_plots:
+                corr, incorr = _split_sim_scores(
+                    val_scores, actuals, option_cols_present
+                )
+                plot_similarity_distributions(
+                    corr, incorr,
+                    method_name="TF-IDF", filename="tfidf_similarity_dist.png",
+                )
+
+    finally:
+        # ── Always close the run, even if an exception is raised ──────────────
+        finish_run(wandb_run)
+        logger.info("W&B run 'tfidf' closed.")
+
     return ranker, scores, met
 
 
@@ -349,108 +320,124 @@ def _fit_w2v(
     val_df     : "pd.DataFrame",
     option_cols: List[str],
     evaluator  : MAPAtKEvaluator,
-    wandb_run  : Optional[object],                 # ← received from caller
     scores     : Dict[str, Dict[str, np.ndarray]],
 ) -> Tuple[Word2VecRanker, Dict, Dict]:
     """
     Fit/load Word2Vec, score val+test, compute & log metrics.
+    Opens its own W&B run, logs, then closes it before returning.
 
     Kaggle cell usage
     -----------------
         w2v_ranker, scores, w2v_met = _fit_w2v(
             cfg, fit_df, test_df, val_df, option_cols,
-            evaluator, wandb_runs["word2vec"], scores
+            evaluator, scores
         )
     """
-    ranker = Word2VecRanker(cfg)
-    ranker.fit_or_load(fit_df, test_df)   # test_df adds vocab, no label leak
+    # ── Open a fresh W&B run just for Word2Vec ────────────────────────────────
+    wandb_run = init_wandb(cfg, run_name="phase1-word2vec", model_tag="word2vec")
 
-    val_scores  = ranker.predict_scores(val_df)
-    test_scores = ranker.predict_scores(test_df)
-    scores["val"]["w2v"]  = val_scores
-    scores["test"]["w2v"] = test_scores
-
-    option_cols_present = [c for c in cfg.options if c in val_df.columns]
-    val_preds = evaluator.scores_to_top_k_predictions(val_scores, option_cols_present)
-
-    # MAP metric
-    met = evaluator.evaluate(
-        val_df, val_preds,
-        answer_col=cfg.answer_col, split="w2v_val", wandb_run=None,
-    )
-
-    # ── Log common metrics to the word2vec W&B run ────────────────────────────
-    if cfg.answer_col in val_df.columns:
-        actuals = val_df[cfg.answer_col].tolist()
-        _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "Word2Vec")
-
-    # ── PCA visualisation of word vectors ─────────────────────────────────────
     try:
-        from sklearn.decomposition import PCA
-        vocab_words = list(ranker.model.wv.key_to_index.keys())[:300]
-        word_matrix = np.array([ranker.model.wv[w] for w in vocab_words])
-        pca         = PCA(n_components=2, random_state=cfg.seed)
-        reduced     = pca.fit_transform(word_matrix)
-        plot_w2v_pca(reduced, vocab_words, n_label=50)
-    except Exception as exc:
-        logger.warning(f"W2V PCA plot skipped: {exc}")
+        ranker = Word2VecRanker(cfg)
+        ranker.fit_or_load(fit_df, test_df)
 
-    # NOTE: do NOT call finish_run here — closed in print_summary.
+        val_scores  = ranker.predict_scores(val_df)
+        test_scores = ranker.predict_scores(test_df)
+        scores["val"]["w2v"]  = val_scores
+        scores["test"]["w2v"] = test_scores
+
+        option_cols_present = [c for c in cfg.options if c in val_df.columns]
+        val_preds = evaluator.scores_to_top_k_predictions(
+            val_scores, option_cols_present
+        )
+
+        met = evaluator.evaluate(
+            val_df, val_preds,
+            answer_col=cfg.answer_col, split="w2v_val", wandb_run=None,
+        )
+
+        if cfg.answer_col in val_df.columns:
+            actuals = val_df[cfg.answer_col].tolist()
+            _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "Word2Vec")
+
+        # ── PCA visualisation ─────────────────────────────────────────────────
+        try:
+            from sklearn.decomposition import PCA
+            vocab_words = list(ranker.model.wv.key_to_index.keys())[:300]
+            word_matrix = np.array([ranker.model.wv[w] for w in vocab_words])
+            pca         = PCA(n_components=2, random_state=cfg.seed)
+            reduced     = pca.fit_transform(word_matrix)
+            plot_w2v_pca(reduced, vocab_words, n_label=50)
+        except Exception as exc:
+            logger.warning(f"W2V PCA plot skipped: {exc}")
+
+    finally:
+        finish_run(wandb_run)
+        logger.info("W&B run 'word2vec' closed.")
+
     return ranker, scores, met
 
 
-def _fit_sbert(
-    cfg          : Config,
-    val_df       : "pd.DataFrame",
-    test_df      : "pd.DataFrame",
-    option_cols  : List[str],
-    evaluator    : MAPAtKEvaluator,
-    wandb_run    : Optional[object],               # ← received from caller
-    scores       : Dict[str, Dict[str, np.ndarray]],
-    run_sim_plots: bool,
-) -> Tuple[SBERTRanker, Dict, Dict]:
+def _fit_w2v(
+    cfg        : Config,
+    fit_df     : "pd.DataFrame",
+    test_df    : "pd.DataFrame",
+    val_df     : "pd.DataFrame",
+    option_cols: List[str],
+    evaluator  : MAPAtKEvaluator,
+    scores     : Dict[str, Dict[str, np.ndarray]],
+) -> Tuple[Word2VecRanker, Dict, Dict]:
     """
-    Load SBERT, score val+test, compute & log metrics.
+    Fit/load Word2Vec, score val+test, compute & log metrics.
+    Opens its own W&B run, logs, then closes it before returning.
 
     Kaggle cell usage
     -----------------
-        sbert_ranker, scores, sbert_met = _fit_sbert(
-            cfg, val_df, test_df, option_cols,
-            evaluator, wandb_runs["sbert"], scores, run_sim_plots=True
+        w2v_ranker, scores, w2v_met = _fit_w2v(
+            cfg, fit_df, test_df, val_df, option_cols,
+            evaluator, scores
         )
     """
-    ranker = SBERTRanker(cfg)
+    # ── Open a fresh W&B run just for Word2Vec ────────────────────────────────
+    wandb_run = init_wandb(cfg, run_name="phase1-word2vec", model_tag="word2vec")
 
-    val_scores  = ranker.predict_scores(val_df)
-    test_scores = ranker.predict_scores(test_df)
-    scores["val"]["sbert"]  = val_scores
-    scores["test"]["sbert"] = test_scores
+    try:
+        ranker = Word2VecRanker(cfg)
+        ranker.fit_or_load(fit_df, test_df)
 
-    option_cols_present = [c for c in cfg.options if c in val_df.columns]
-    val_preds = evaluator.scores_to_top_k_predictions(val_scores, option_cols_present)
+        val_scores  = ranker.predict_scores(val_df)
+        test_scores = ranker.predict_scores(test_df)
+        scores["val"]["w2v"]  = val_scores
+        scores["test"]["w2v"] = test_scores
 
-    # MAP metric
-    met = evaluator.evaluate(
-        val_df, val_preds,
-        answer_col=cfg.answer_col, split="sbert_val", wandb_run=None,
-    )
+        option_cols_present = [c for c in cfg.options if c in val_df.columns]
+        val_preds = evaluator.scores_to_top_k_predictions(
+            val_scores, option_cols_present
+        )
 
-    # ── Log common metrics to the sbert W&B run ───────────────────────────────
-    if cfg.answer_col in val_df.columns:
-        actuals = val_df[cfg.answer_col].tolist()
-        _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "SBERT")
+        met = evaluator.evaluate(
+            val_df, val_preds,
+            answer_col=cfg.answer_col, split="w2v_val", wandb_run=None,
+        )
 
-        # ── Similarity distribution plot ──────────────────────────────────────
-        if run_sim_plots:
-            corr, incorr = _split_sim_scores(
-                val_scores, actuals, option_cols_present
-            )
-            plot_similarity_distributions(
-                corr, incorr,
-                method_name="SBERT", filename="sbert_similarity_dist.png",
-            )
+        if cfg.answer_col in val_df.columns:
+            actuals = val_df[cfg.answer_col].tolist()
+            _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "Word2Vec")
 
-    # NOTE: do NOT call finish_run here — closed in print_summary.
+        # ── PCA visualisation ─────────────────────────────────────────────────
+        try:
+            from sklearn.decomposition import PCA
+            vocab_words = list(ranker.model.wv.key_to_index.keys())[:300]
+            word_matrix = np.array([ranker.model.wv[w] for w in vocab_words])
+            pca         = PCA(n_components=2, random_state=cfg.seed)
+            reduced     = pca.fit_transform(word_matrix)
+            plot_w2v_pca(reduced, vocab_words, n_label=50)
+        except Exception as exc:
+            logger.warning(f"W2V PCA plot skipped: {exc}")
+
+    finally:
+        finish_run(wandb_run)
+        logger.info("W&B run 'word2vec' closed.")
+
     return ranker, scores, met
 
 
@@ -477,9 +464,9 @@ def run_ensemble(
     val_df     : "pd.DataFrame",
     option_cols: List[str],
     evaluator  : MAPAtKEvaluator,
-    wandb_runs : Optional[Dict[str, Optional[object]]] = None,
     run_plots  : bool = True,
 ) -> Tuple[List[List[str]], List[List[str]], Dict[str, float]]:
+
     """
     Grid-search best weights → fuse val & test scores → evaluate.
 
@@ -587,26 +574,17 @@ def generate_submission(
 def print_summary(
     map_scores: Dict[str, float],
     cfg       : Config,
-    wandb_runs: Optional[Dict[str, Optional[object]]] = None,
 ) -> None:
     """
-    Print final MAP@K table and close every W&B run.
-
-    All three runs are closed here (not inside the _fit_* helpers) so that
-    any metrics pushed during the ensemble phase are still captured before
-    the run is marked finished.
+    Print final MAP@K table.
+    W&B runs are already closed inside each _fit_* helper,
+    so nothing needs to be closed here.
     """
     sep = "═" * 52
     logger.info(f"\n{sep}\n  PHASE 1 SUMMARY\n{sep}")
     for name, score in map_scores.items():
         logger.info(f"  {name:<12}  MAP@{cfg.top_k} = {score:.4f}")
     logger.info(sep)
-
-    if wandb_runs:
-        for run_key, run in wandb_runs.items():
-            finish_run(run)
-            logger.info(f"W&B run '{run_key}' closed.")
-        logger.info("All W&B runs closed.")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -620,23 +598,15 @@ def run_full_pipeline(
     run_ensemble_plots : bool = True,
     submission_filename: str  = "phase1_baseline_submission.csv",
 ) -> Dict[str, Any]:
-    """
-    Run the entire Phase-1 pipeline end-to-end in a single call.
-
-    Kaggle cell usage
-    -----------------
-        from main import run_full_pipeline
-        results = run_full_pipeline()
-    """
-    # 0. Setup — returns cfg, wandb_runs (3 live runs), evaluator
-    cfg, wandb_runs, evaluator = setup(run_name=run_name)
+    # 0. Setup — no longer returns wandb_runs
+    cfg, evaluator = setup(run_name=run_name)
 
     # 1. Data
     train_df, test_df, fit_df, val_df, option_cols = load_and_preprocess(
         cfg, run_eda_plots=run_eda_plots
     )
 
-    # 2. Models — wandb_runs passed explicitly so each helper receives its run
+    # 2. Models — each _fit_* opens/closes its own W&B run
     models, scores = train_models(
         cfg           = cfg,
         fit_df        = fit_df,
@@ -644,7 +614,6 @@ def run_full_pipeline(
         test_df       = test_df,
         option_cols   = option_cols,
         evaluator     = evaluator,
-        wandb_runs    = wandb_runs,
         run_sim_plots = run_sim_plots,
     )
 
@@ -655,7 +624,6 @@ def run_full_pipeline(
         val_df      = val_df,
         option_cols = option_cols,
         evaluator   = evaluator,
-        wandb_runs  = wandb_runs,
         run_plots   = run_ensemble_plots,
     )
 
@@ -664,12 +632,11 @@ def run_full_pipeline(
         cfg, test_df, ens_test_preds, filename=submission_filename
     )
 
-    # 5. Summary — also closes all W&B runs
-    print_summary(map_scores, cfg, wandb_runs)
+    # 5. Summary — W&B already closed, just prints
+    print_summary(map_scores, cfg)
 
     return {
         "cfg"           : cfg,
-        "wandb_runs"    : wandb_runs,
         "evaluator"     : evaluator,
         "train_df"      : train_df,
         "test_df"       : test_df,
