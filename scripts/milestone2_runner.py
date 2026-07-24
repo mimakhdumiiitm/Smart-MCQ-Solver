@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -29,14 +31,11 @@ logger = logging.getLogger(__name__)
 # Priority artifact directory – checked FIRST before any other path
 # ─────────────────────────────────────────────────────────────────────────────
 
-from pathlib import Path
-
 # Ordered list of artifact roots to probe (highest priority first).
-# The first directory that actually exists wins.
 _ARTIFACT_ROOTS: List[Path] = [
     Path("/kaggle/input/notebooks/mimakhdumiiitm"
-         "/dl-22f3001418-notebook-t22026/outputs"),        
-    Path("/kaggle/input/project-artifacts/outputs"),        
+         "/dl-22f3001418-notebook-t22026/outputs"),
+    Path("/kaggle/input/project-artifacts/outputs"),
 ]
 
 
@@ -90,6 +89,7 @@ def _artifact_subpath(subdir: str, filename: str) -> Optional[Path]:
 
 try:
     from utils.wandb_init import (
+        authenticate,           # safe, non-interactive auth helper
         init_wandb,
         log_model_metrics,
         finish_run,
@@ -106,6 +106,75 @@ except ImportError:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Non-interactive W&B authentication  (called ONCE before any wandb.init)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _do_wandb_auth(api_key: Optional[str] = None) -> None:
+    """
+    Authenticate with W&B exactly once, **never** prompting the user.
+
+    Priority
+    ────────
+    1. ``api_key`` argument (caller-supplied)
+    2. ``WANDB_API_KEY`` environment variable
+    3. ``authenticate()`` from utils/wandb_init  (Kaggle Secrets → env → netrc)
+    4. Existing netrc / previous login  (silent re-use)
+
+    If none of the above succeeds W&B logging is silently disabled via the
+    ``WANDB_MODE=disabled`` environment variable so that no interactive
+    prompt is ever shown.
+    """
+    # ── Resolve the key from all non-interactive sources ─────────────────────
+    resolved_key: Optional[str] = (
+        api_key
+        or os.environ.get("WANDB_API_KEY")
+    )
+
+    # Try Kaggle Secrets via utils/wandb_init.authenticate()
+    if resolved_key is None and _WANDB_UTILS_AVAILABLE:
+        try:
+            authenticate()          # writes key to env / netrc silently
+            resolved_key = os.environ.get("WANDB_API_KEY")
+        except Exception as exc:
+            logger.debug(f"[W&B] authenticate() returned: {exc}")
+
+    # ── Attempt a silent login ────────────────────────────────────────────────
+    try:
+        import wandb
+
+        if resolved_key:
+            # Force non-interactive login with the resolved key.
+            wandb.login(
+                key       = resolved_key,
+                relogin   = True,
+                anonymous = "never",
+            )
+            logger.info("[W&B] Logged in with API key (non-interactive).")
+        else:
+            # No key available – try to reuse an existing netrc entry.
+            # ``anonymous="never"`` + ``relogin=False`` means wandb will use
+            # whatever is already stored and raise (not prompt) if nothing is.
+            wandb.login(
+                anonymous = "never",
+                relogin   = False,
+            )
+            logger.info("[W&B] Re-using existing W&B credentials.")
+
+    except Exception as exc:
+        # Authentication failed and we have no key → disable W&B entirely
+        # so the rest of the pipeline runs without any interactive prompt.
+        logger.warning(
+            f"[W&B] Silent login failed ({exc}). "
+            "Setting WANDB_MODE=disabled – metrics will not be uploaded."
+        )
+        os.environ["WANDB_MODE"] = "disabled"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-run W&B helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _wandb_init(
     project    : str,
     run_name   : str,
@@ -114,16 +183,13 @@ def _wandb_init(
     model_tag  : str = "custom",
 ) -> object:
     """
-    Start a W&B run.
+    Start a W&B run. Auth must have been performed by ``_do_wandb_auth()``
+    before this is called – this function never calls ``wandb.login()``.
 
     Strategy
     ────────
-    • If utils/wandb_init is available AND cfg is supplied AND model_tag is a
-      recognised phase-1 baseline tag → delegate to ``init_wandb``.
-    • Otherwise fall back to the inline wandb.init call (preserves behaviour
-      for zero-shot / transformer runs that are not covered by init_wandb).
-
-    Returns the run object (or None if W&B is absent / disabled).
+    • model_tag in COMPARABLE_MODELS + utils available → ``init_wandb()``
+    • everything else                                  → inline wandb.init()
     """
     # ── delegate path ────────────────────────────────────────────────────────
     if _WANDB_UTILS_AVAILABLE and cfg is not None and model_tag in COMPARABLE_MODELS:
@@ -144,7 +210,9 @@ def _wandb_init(
             project = project,
             name    = run_name,
             config  = config_dict,
-            reinit  = True,
+            # Use 'finish_previous' to avoid the deprecated boolean reinit
+            # warning introduced in wandb ≥ 0.18.
+            reinit  = "finish_previous",
         )
         logger.info(f"[W&B] Run started (inline) → {run.url}")
         return run
@@ -156,12 +224,7 @@ def _wandb_init(
 
 
 def _wandb_finish(run) -> None:
-    """
-    Safely finish a W&B run.
-
-    Delegates to ``finish_run`` from utils/wandb_init when available,
-    otherwise falls back to inline call.
-    """
+    """Safely finish a W&B run (delegates to utils when available)."""
     if run is None:
         return
 
@@ -172,7 +235,6 @@ def _wandb_finish(run) -> None:
         except Exception as exc:
             logger.warning(f"[W&B] finish_run() failed: {exc}")
 
-    # inline fallback
     try:
         run.finish()
         logger.info("[W&B] Run finished.")
@@ -182,10 +244,7 @@ def _wandb_finish(run) -> None:
 
 def _wandb_log(run, metrics: dict) -> None:
     """
-    Log metrics to a W&B run.
-
-    Delegates to ``log_model_metrics`` from utils/wandb_init when available
-    (which also validates that REQUIRED_METRICS are present).
+    Log metrics to a W&B run (delegates to utils when available).
     Falls back to inline run.log otherwise.
     """
     if run is None:
@@ -198,7 +257,6 @@ def _wandb_log(run, metrics: dict) -> None:
         except Exception as exc:
             logger.warning(f"[W&B] log_model_metrics failed: {exc}")
 
-    # inline fallback
     try:
         run.log(metrics)
     except Exception as exc:
@@ -207,26 +265,21 @@ def _wandb_log(run, metrics: dict) -> None:
 
 def _build_required_metrics_payload(raw_metrics: dict) -> dict:
     """
-    Map internal metric keys produced by ``_compute_metrics`` to the
-    canonical REQUIRED_METRICS names expected by utils/wandb_init:
+    Map internal metric keys → canonical REQUIRED_METRICS names:
 
-        map_at_3   → map_at_k
-        accuracy   → accuracy
-        f1_macro   → f1_score
-        precision  → precision   (if present)
-        recall     → recall      (if present)
+        map_at_3  → map_at_k
+        f1_macro  → f1_score
+        (others passed through unchanged)
 
-    Any extra keys are passed through unchanged.
+    Also seeds any still-missing REQUIRED_METRICS keys with None so that
+    log_model_metrics never raises a missing-key warning.
     """
     mapping = {
         "map_at_3": "map_at_k",
         "f1_macro": "f1_score",
     }
-    payload = {}
-    for k, v in raw_metrics.items():
-        payload[mapping.get(k, k)] = v
+    payload = {mapping.get(k, k): v for k, v in raw_metrics.items()}
 
-    # Ensure all REQUIRED_METRICS keys exist (set to None if missing)
     if _WANDB_UTILS_AVAILABLE:
         for req in REQUIRED_METRICS:
             payload.setdefault(req, None)
@@ -315,17 +368,12 @@ def _auto_load_data(
 
     # ── Validation set ────────────────────────────────────────────────────────
     if val_df is None:
-        # 1. artifact roots (priority order via _artifact_subpath / _artifact_path)
         artifact_val = (
             _artifact_subpath("processed_files", "train_processed.csv")
             or _artifact_path("train_processed.csv")
         )
-
-        # 2. local processed file
         processed_local = cfg.output_dir / "train_processed.csv"
-
-        # 3. raw CSV
-        raw = cfg.data_dir / cfg.train_file
+        raw             = cfg.data_dir / cfg.train_file
 
         if artifact_val is not None:
             logger.info(f"[data] Loading val_df from artifact: {artifact_val}")
@@ -351,7 +399,6 @@ def _auto_load_data(
             _artifact_subpath("processed_files", "test_processed.csv")
             or _artifact_path("test_processed.csv")
         )
-
         processed_local = cfg.output_dir / "test_processed.csv"
         raw             = cfg.data_dir / cfg.test_file
 
@@ -384,7 +431,7 @@ def _load_baseline_scores(out_dir, provided) -> Dict[str, np.ndarray]:
 
     Search order per file
     ─────────────────────
-    1. Caller-supplied dict (``provided``)
+    1. Caller-supplied dict  (``provided``)
     2. Priority artifact root   (/kaggle/input/notebooks/…/outputs)
     3. Secondary artifact root  (/kaggle/input/project-artifacts/outputs)
     4. cfg.output_dir           (local run outputs)
@@ -400,7 +447,6 @@ def _load_baseline_scores(out_dir, provided) -> Dict[str, np.ndarray]:
     }
 
     for key, filename in mapping.items():
-        # Try every artifact root in priority order, then local output dir.
         artifact_hit = _artifact_path(filename)
         local        = out_dir / filename
 
@@ -424,8 +470,8 @@ def _load_baseline_scores(out_dir, provided) -> Dict[str, np.ndarray]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_scores_with_artifact_fallback(
-    local_val_path : Path,
-    local_test_path: Path,
+    local_val_path        : Path,
+    local_test_path       : Path,
     artifact_val_filename : str,
     artifact_test_filename: str,
 ) -> Optional[tuple[np.ndarray, np.ndarray]]:
@@ -461,7 +507,7 @@ def _load_scores_with_artifact_fallback(
     if artifact_val is not None and artifact_test is None:
         logger.info(
             f"[cache] Found artifact val scores ({artifact_val}) but no test "
-            f"scores – will recompute both to stay consistent."
+            "scores – will recompute both to stay consistent."
         )
 
     return None  # nothing cached → caller must recompute
@@ -571,26 +617,23 @@ def run_milestone2(
     wandb_project   : W&B project name
     wandb_api_key   : W&B API key (set WANDB_API_KEY env var as alternative)
 
-    Artifact search order
-    ─────────────────────
-    For every file this runner needs (CSVs, .npy scores) it probes:
-      1. /kaggle/input/notebooks/mimakhdumiiitm/
-             dl-22f3001418-notebook-t22026/outputs   ← NEW priority-1
-      2. /kaggle/input/project-artifacts/outputs     ← original fallback
-      3. cfg.output_dir                              ← local run outputs
-      4. cfg.data_dir                                ← raw source files
-    If nothing is found the relevant model is run from scratch and its
-    outputs are saved to cfg.output_dir for future reuse.
+    Artifact search order (for every .csv / .npy this runner needs)
+    ───────────────────────────────────────────────────────────────
+    1. /kaggle/input/notebooks/mimakhdumiiitm/
+           dl-22f3001418-notebook-t22026/outputs   ← priority-1
+    2. /kaggle/input/project-artifacts/outputs     ← original fallback
+    3. cfg.output_dir                              ← local run outputs
+    4. cfg.data_dir                                ← raw source files
+
+    W&B authentication
+    ──────────────────
+    Authentication is performed exactly once, non-interactively, before any
+    wandb.init() call.  No prompts are ever shown; if no key is available
+    W&B is silently disabled (WANDB_MODE=disabled).
     """
 
-    # ── 0. W&B login ─────────────────────────────────────────────────────────
-    if wandb_api_key:
-        try:
-            import wandb as _wandb
-            _wandb.login(key=wandb_api_key, relogin=True)
-            logger.info("[W&B] Logged in with provided API key.")
-        except Exception as exc:
-            logger.warning(f"[W&B] Login failed: {exc}")
+    # ── 0. Authenticate ONCE – never interactive ──────────────────────────────
+    _do_wandb_auth(wandb_api_key)
 
     # ── 1. Config / evaluator defaults ───────────────────────────────────────
     if cfg is None:
@@ -604,8 +647,7 @@ def run_milestone2(
     if option_cols is None:
         option_cols = cfg.options
 
-    # Log which artifact root is active so users can confirm the right one
-    # was picked at import time.
+    # Log which artifact root is active.
     if _ARTIFACT_ROOT is not None:
         logger.info(f"[M2] Active artifact root: {_ARTIFACT_ROOT}")
     else:
@@ -648,12 +690,11 @@ def run_milestone2(
         zs_val_path  = out / "zs_val_scores.npy"
         zs_test_path = out / "zs_test_scores.npy"
 
-        # ── artifact-aware cache check ────────────────────────────────────────
         cached = _load_scores_with_artifact_fallback(
-            local_val_path        = zs_val_path,
-            local_test_path       = zs_test_path,
-            artifact_val_filename = "zs_val_scores.npy",
-            artifact_test_filename= "zs_test_scores.npy",
+            local_val_path         = zs_val_path,
+            local_test_path        = zs_test_path,
+            artifact_val_filename  = "zs_val_scores.npy",
+            artifact_test_filename = "zs_test_scores.npy",
         )
 
         if cached is not None:
@@ -665,7 +706,6 @@ def run_milestone2(
             zs_val_scores, zs_test_scores = _run_zero_shot(
                 cfg, val_df, test_df, zs_run
             )
-            # Save locally for future runs.
             np.save(zs_val_path,  zs_val_scores)
             np.save(zs_test_path, zs_test_scores)
             logger.info(f"[M2] Zero-shot scores saved → {out}")
@@ -673,12 +713,13 @@ def run_milestone2(
 
         zs_metrics         = _compute_metrics(zs_val_scores, val_df, option_cols)
         zs_required        = _build_required_metrics_payload(zs_metrics)
-        zs_tagged          = {f"zeroshot_val/{k}": v for k, v in zs_metrics.items()}
         zs_required_tagged = {f"zeroshot_val/{k}": v for k, v in zs_required.items()}
 
         _wandb_log(zs_run, zs_required_tagged)
 
-        results["metrics"].update(zs_tagged)
+        results["metrics"].update(
+            {f"zeroshot_val/{k}": v for k, v in zs_metrics.items()}
+        )
         results["zs_val_scores"]  = zs_val_scores
         results["zs_test_scores"] = zs_test_scores
         all_method_metrics["Zero-Shot NLI"] = zs_metrics
@@ -718,12 +759,11 @@ def run_milestone2(
         tr_val_path  = out / "transformer_val_scores.npy"
         tr_test_path = out / "transformer_test_scores.npy"
 
-        # ── artifact-aware cache check ────────────────────────────────────────
         cached = _load_scores_with_artifact_fallback(
-            local_val_path        = tr_val_path,
-            local_test_path       = tr_test_path,
-            artifact_val_filename = "transformer_val_scores.npy",
-            artifact_test_filename= "transformer_test_scores.npy",
+            local_val_path         = tr_val_path,
+            local_test_path        = tr_test_path,
+            artifact_val_filename  = "transformer_val_scores.npy",
+            artifact_test_filename = "transformer_test_scores.npy",
         )
 
         if cached is not None:
@@ -742,12 +782,13 @@ def run_milestone2(
 
         tr_metrics         = _compute_metrics(transformer_val_scores, val_df, option_cols)
         tr_required        = _build_required_metrics_payload(tr_metrics)
-        tr_tagged          = {f"transformer_val/{k}": v for k, v in tr_metrics.items()}
         tr_required_tagged = {f"transformer_val/{k}": v for k, v in tr_required.items()}
 
         _wandb_log(tr_run, tr_required_tagged)
 
-        results["metrics"].update(tr_tagged)
+        results["metrics"].update(
+            {f"transformer_val/{k}": v for k, v in tr_metrics.items()}
+        )
         results["transformer_val_scores"]  = transformer_val_scores
         results["transformer_test_scores"] = transformer_test_scores
         all_method_metrics["Transformer Embed"] = tr_metrics
@@ -797,7 +838,6 @@ def run_milestone2(
         try:
             bm          = _compute_metrics(baseline_scores[key], val_df, option_cols)
             bm_required = _build_required_metrics_payload(bm)
-
             _wandb_log(bl_run, bm_required)
 
             tagged = {f"{display_tag}_val/{k}": v for k, v in bm.items()}
@@ -838,7 +878,6 @@ def run_milestone2(
                     wandb_table_rows.append(
                         [method, m["map_at_3"], m["accuracy"], m["f1_macro"]]
                     )
-
             tbl = _wandb.Table(
                 columns = ["Method", "MAP@3", "Accuracy", "F1_macro"],
                 data    = wandb_table_rows,
