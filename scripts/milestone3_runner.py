@@ -68,16 +68,13 @@ def run_milestone3(
         "val_contexts", "test_contexts", "train_contexts",
         "metrics"  (ablation MAP@3 values)
     """
-    if cfg is None:
-        from config.config import Config
-        cfg = Config()
+    from config.config import Config
+    cfg = Config()
 
-    if evaluator is None:
-        from scripts.milestone2_runner import _Evaluator
-        evaluator = _Evaluator()
+    from scripts.milestone2_runner import _Evaluator
+    evaluator = _Evaluator()
 
-    if option_cols is None:
-        option_cols = cfg.options
+    option_cols = cfg.options
         
     out = cfg.output_dir
     results: Dict[str, Any] = {"metrics": {}}
