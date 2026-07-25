@@ -39,14 +39,11 @@ def _all_rag_cached(out: Path) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_milestone3(
-    cfg,
-    train_df:    pd.DataFrame,
-    val_df:      pd.DataFrame,
-    test_df:     pd.DataFrame,
-    evaluator,
-    option_cols: List[str],
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
     retrieval_model: str = "all-mpnet-base-v2",
-    top_k:           int = 5,
+    top_k: int = 5,
 ) -> Dict[str, Any]:
     """
     Execute the full Milestone 3 RAG pipeline.
@@ -71,6 +68,17 @@ def run_milestone3(
         "val_contexts", "test_contexts", "train_contexts",
         "metrics"  (ablation MAP@3 values)
     """
+    if cfg is None:
+        from config.config import Config
+        cfg = Config()
+
+    if evaluator is None:
+        from scripts.milestone2_runner import _Evaluator
+        evaluator = _Evaluator()
+
+    if option_cols is None:
+        option_cols = cfg.options
+        
     out = cfg.output_dir
     results: Dict[str, Any] = {"metrics": {}}
 
