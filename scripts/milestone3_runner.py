@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 
-from src.rag_pipeline import RAGPipeline
+from src.rag.rag_pipeline import RAGPipeline
 
 logger = logging.getLogger(__name__)
 
