@@ -603,34 +603,6 @@ def run_milestone2(
     wandb_project   : str                              = "smart-mcq-solver",
     wandb_api_key   : Optional[str]                   = None,
 ) -> Dict[str, Any]:
-    """
-    Run the full Milestone 2 pipeline.
-
-    Parameters
-    ──────────
-    cfg             : Config object (built automatically if None)
-    val_df          : Validation DataFrame (auto-loaded if None)
-    test_df         : Test DataFrame (auto-loaded if None)
-    evaluator       : Evaluator instance (built-in _Evaluator used if None)
-    option_cols     : e.g. ['A','B','C','D','E']
-    baseline_scores : dict of Phase-1 .npy arrays (auto-loaded if None)
-    wandb_project   : W&B project name
-    wandb_api_key   : W&B API key (set WANDB_API_KEY env var as alternative)
-
-    Artifact search order (for every .csv / .npy this runner needs)
-    ───────────────────────────────────────────────────────────────
-    1. /kaggle/input/notebooks/mimakhdumiiitm/
-           dl-22f3001418-notebook-t22026/outputs   ← priority-1
-    2. /kaggle/input/project-artifacts/outputs     ← original fallback
-    3. cfg.output_dir                              ← local run outputs
-    4. cfg.data_dir                                ← raw source files
-
-    W&B authentication
-    ──────────────────
-    Authentication is performed exactly once, non-interactively, before any
-    wandb.init() call.  No prompts are ever shown; if no key is available
-    W&B is silently disabled (WANDB_MODE=disabled).
-    """
 
     # ── 0. Authenticate ONCE – never interactive ──────────────────────────────
     _do_wandb_auth(wandb_api_key)
@@ -895,3 +867,4 @@ def run_milestone2(
 
     results["all_method_metrics"] = all_method_metrics
     return results
+

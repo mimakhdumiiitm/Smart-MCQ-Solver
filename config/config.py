@@ -19,9 +19,9 @@ FIGURE_DPI   = 150
 SAVE_PLOTS   = True
 OUTPUT_DIR   = "/kaggle/working/outputs"
 PLOT_DIR     = "/kaggle/working/outputs/plots"
-PREBUILT_TFIDF_MODEL_PATH = Path("/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026outputs/models/tfidf_vectorizer.pkl")
-PREBUILT_W2V_MODEL_PATH   = Path("/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026outputs/models/word2vec.model")
-
+PREBUILT_TFIDF_MODEL_PATH = Path("/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/models/tfidf_vectorizer.pkl")
+PREBUILT_W2V_MODEL_PATH   = Path("/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/models/word2vec.model")
+kaggle_artifacts_dir = Path("/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs")
 
 # ─────────────────────────────────────────────
 # Logging
@@ -147,6 +147,11 @@ class Config:
 
     # ── Transformer embedding model (Milestone 2-3) ───────────────
     tr_model_key: str = "deberta"         # see TransformerEmbeddingRanker.SUPPORTED_MODELS
+
+    kaggle_artifacts_dir: Optional[Path] = Path(
+        "/kaggle/input/notebooks/mimakhdumiiitm/"
+        "dl-22f3001418-notebook-t22026/outputs"
+    )
 
     # ──────────────────────────────────────────────────────────────
     def __post_init__(self) -> None:
