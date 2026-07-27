@@ -1,430 +1,652 @@
-import os
+# main.py
 
-# ============================================================
-# SETUP
-# ============================================================
+import logging
+from collections import Counter
+from typing import Dict, List, Optional, Tuple, Any
+
 import numpy as np
 import pandas as pd
-from collections import Counter
+from sklearn.model_selection import StratifiedKFold
 
-# ============================================================
-# CONFIG IMPORTS
-# ============================================================
-from config.config import (
-    TEXT_COLS,
-    OPTION_COLS,
-    PROMPT_COL,
-    ANSWER_COL,
-    TOP_K,
-    RANDOM_SEED,
-    OUTPUT_DIR,
-    TFIDF_INPUT_PATH,
-    TFIDF_OUTPUT_PATH,
-    MODEL_DIR,
-    W2V_MODEL_PATH,
-    PROCESSED_OUTPUT_DIR
+from config.config import Config, set_seed, get_logger
+
+from utils.wandb_init import (
+    init_wandb,
+    log_model_metrics,
+    finish_run,
 )
+from src.data.data_loader import DataLoader
+from src.preprocessing.preprocessing import TextPreprocessor
+from src.evaluation.evaluator import MAPAtKEvaluator
+from src.models.tfidf_ranker import TFIDFRanker
+from src.models.w2v_ranker import Word2VecRanker
+from src.models.sbert_ranker import SBERTRanker
+from src.ensemble.fuser import ScoreFuser
+from utils.submission import SubmissionGenerator
 
-# Create required directories
-os.makedirs("models", exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-# ============================================================
-# DATA LOADING
-# ============================================================
-from utils.data_loader import (
-    load_train,
-    load_test,
-    validate_dataframe,
-    check_missing_values,
-    fill_missing_text,
-    print_basic_stats,
-)
-
-# ============================================================
-# PREPROCESSING
-# ============================================================
-from src.preprocessing import (
-    clean_dataframe,
-    add_text_length_features,
-    build_row_corpus,
-    build_token_sentences,
-)
-
-# ============================================================
-# EMBEDDINGS
-# ============================================================
-from src.embeddings import (
-    TFIDFEmbedder,
-    Word2VecEmbedder,
-    reduce_with_pca,
-)
-
-# ============================================================
-# SIMILARITY
-# ============================================================
-from src.similarity import (
-    tfidf_prompt_option_similarity,
-    w2v_prompt_option_similarity,
-    rank_options_by_similarity,
-    inter_option_similarity_matrix,
-    similarity_correct_vs_incorrect,
-)
-
-# ============================================================
-# METRICS
-# ============================================================
-from utils.metrics import (
-    evaluation_report,
-    rank_distribution,
-    compare_strategies,
-)
-
-# ============================================================
-# VISUALIZATION
-# ============================================================
-from utils.visualization import (
+from src.visualizaton.visualization import (
     plot_answer_distribution,
     plot_text_length_distributions,
     plot_top_words,
     plot_wordcloud,
     plot_similarity_distributions,
-    plot_inter_option_heatmap,
-    plot_mean_similarity_per_option,
     plot_map_comparison,
     plot_rank_distribution,
     plot_w2v_pca,
 )
 
-from gensim.models import Word2Vec
-# ============================================================
-# MAIN EDA PIPELINE STARTS HERE
-# ============================================================
-print("All modules imported successfully.")
-
-# ==================================================================
-# STEP 1: LOAD DATA
-# ==================================================================
-def step_load_data():
-    print("\n" + "=" * 50)
-    print("STEP 1 : LOAD DATA")
-    print("=" * 50)
-
-    train_df = load_train()
-    test_df  = load_test()
-
-    validate_dataframe(train_df, TEXT_COLS + [ANSWER_COL], "Train")
-    validate_dataframe(test_df,  TEXT_COLS,                "Test")
-
-    print_basic_stats(train_df, "Train")
-    print_basic_stats(test_df,  "Test")
-
-    # Missing values
-    missing = check_missing_values(train_df)
-    if not missing.empty:
-        print("\nMissing Values Report:")
-        print(missing)
-        train_df = fill_missing_text(train_df, TEXT_COLS)
-        test_df  = fill_missing_text(test_df,  TEXT_COLS)
-    else:
-        print("No missing values in train set.")
-
-    return train_df, test_df
+logger = get_logger("Main")
 
 
-# ==================================================================
-# STEP 2: TEXT CLEANING & TOKENIZATION
-# ==================================================================
-def step_preprocessing(train_df: pd.DataFrame,
-                        test_df:  pd.DataFrame):
-    print("\n" + "=" * 50)
-    print("STEP 2 : TEXT CLEANING & TOKENIZATION")
-    print("=" * 50)
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 0 — Config, seed, W&B
+# ══════════════════════════════════════════════════════════════════════
 
-    train_df = clean_dataframe(train_df, TEXT_COLS)
-    test_df  = clean_dataframe(test_df,  TEXT_COLS)
-
-    train_df = add_text_length_features(train_df, TEXT_COLS)
-    test_df  = add_text_length_features(test_df,  TEXT_COLS)
-
-    # Show before / after
-    sample = train_df.iloc[0]
-    print(f"\nOriginal prompt : {sample[PROMPT_COL][:100]}...")
-    print(f"Cleaned  prompt : {sample[PROMPT_COL + '_clean'][:100]}...")
-
-    # Text length plots
-    plot_text_length_distributions(train_df, TEXT_COLS)
-
-    return train_df, test_df
-
-
-# ------------------------------------------------------------------
-# Save processed DataFrames as CSVs
-# ------------------------------------------------------------------
-def save_processed_dataframes(train_df: pd.DataFrame, test_df: pd.DataFrame):
-    """Save processed train/test DataFrames to OUTPUT_DIR as CSV files.
-
-    Creates the directory if it does not exist.
+def setup(
+    run_name          : str           = "phase1-baseline",
+    use_wandb_override: Optional[bool] = None,
+) -> Tuple[Config, MAPAtKEvaluator]:          # ← wandb_runs removed from return
     """
-    out_dir = PROCESSED_OUTPUT_DIR
-    os.makedirs(out_dir, exist_ok=True)
+    Initialise config, random seeds, and evaluator.
+    W&B runs are now opened (and closed) inside each _fit_* helper,
+    so a stale/finished run can never be passed to log().
 
-    train_path = os.path.join(out_dir, "train_processed.csv")
-    test_path = os.path.join(out_dir, "test_processed.csv")
-
-    train_df.to_csv(train_path, index=False)
-    test_df.to_csv(test_path, index=False)
-
-    print(f"Saved processed DataFrames to: {out_dir}")
-
-
-# ==================================================================
-# STEP 3: WORD FREQUENCY & WORD CLOUDS
-# ==================================================================
-def step_word_frequency(train_df: pd.DataFrame):
-    print("\n" + "=" * 50)
-    print("STEP 3 : WORD FREQUENCY ANALYSIS")
-    print("=" * 50)
-
-    prompt_tokens = []
-    option_tokens = []
-
-    for _, row in train_df.iterrows():
-        prompt_tokens.extend(str(row[PROMPT_COL + "_clean"]).split())
-        for col in OPTION_COLS:
-            option_tokens.extend(str(row[col + "_clean"]).split())
-
-    prompt_freq = Counter(prompt_tokens)
-    option_freq = Counter(option_tokens)
-
-    print(f"Unique prompt tokens  : {len(prompt_freq)}")
-    print(f"Unique option tokens  : {len(option_freq)}")
-    print(f"Top 10 prompt words   : {prompt_freq.most_common(10)}")
-    print(f"Top 10 option words   : {option_freq.most_common(10)}")
-
-    plot_top_words(prompt_freq, title="Top 20 Prompt Words",
-                   color="#2E86AB", filename="top_prompt_words.png")
-    plot_top_words(option_freq, title="Top 20 Option Words",
-                   color="#A23B72", filename="top_option_words.png")
-
-    plot_wordcloud(prompt_tokens, title="Prompt Word Cloud",
-                   colormap="Blues", filename="wordcloud_prompts.png")
-    plot_wordcloud(option_tokens, title="Option Word Cloud",
-                   colormap="Reds",  filename="wordcloud_options.png")
-
-    return prompt_freq, option_freq
-
-
-# ==================================================================
-# STEP 4: ANSWER DISTRIBUTION
-# ==================================================================
-def step_answer_distribution(train_df: pd.DataFrame):
-    print("\n" + "=" * 50)
-    print("STEP 4 : ANSWER DISTRIBUTION")
-    print("=" * 50)
-
-    dist = train_df[ANSWER_COL].value_counts().sort_index()
-    print(dist)
-    plot_answer_distribution(train_df, answer_col=ANSWER_COL)
-
-
-# ==================================================================
-# STEP 5: TF-IDF EMBEDDINGS
-# ==================================================================
-#step 5 modified 
-def step_tfidf(train_df, test_df):
+    Kaggle cell usage
+    -----------------
+        cfg, evaluator = setup()
     """
-    Handles TF-IDF embedding generation.
-    Reuses a saved TF-IDF model if available; otherwise fits and saves a new one.
+    cfg = Config()
+    set_seed(cfg.seed)
+
+    if use_wandb_override is not None:
+        cfg.use_wandb = use_wandb_override
+
+    evaluator = MAPAtKEvaluator(k=cfg.top_k)
+    MAPAtKEvaluator.run_unit_tests()
+
+    logger.info("Setup complete.")
+    return cfg, evaluator                     
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 1 — Data loading, preprocessing, EDA visuals, train/val split
+# ══════════════════════════════════════════════════════════════════════
+
+def load_and_preprocess(
+    cfg          : Config,
+    run_eda_plots: bool = True,
+) -> Tuple[
+    "pd.DataFrame",   # full processed train
+    "pd.DataFrame",   # full processed test
+    "pd.DataFrame",   # fit split  (80 %)
+    "pd.DataFrame",   # val split  (20 %)
+    List[str],        # option column labels  e.g. ["A","B","C","D","E"]
+]:
     """
-    embedder = TFIDFEmbedder()
+    Load raw CSVs → preprocess → EDA plots → stratified train/val split.
 
-    # Reuse TF-IDF model from previous notebook if available
-    if os.path.exists(TFIDF_INPUT_PATH):
-        print(f"--> Reusing saved model from Kaggle Input: {TFIDF_INPUT_PATH}")
-        embedder.load(TFIDF_INPUT_PATH)
-    else:
-        print("--> No saved model found. Fitting vocabulary from scratch...")
-        train_corpus = build_row_corpus(train_df, cols=TEXT_COLS)
-        embedder.fit(train_corpus)
+    Kaggle cell usage
+    -----------------
+        train_df, test_df, fit_df, val_df, option_cols = load_and_preprocess(cfg)
+    """
+    # ── Raw data ─────────────────────────────────────────────────────────────
+    loader       = DataLoader(cfg)
+    raw_train_df = loader.load_train()
+    raw_test_df  = loader.load_test()
+    logger.info(f"Raw train: {raw_train_df.shape}  |  Raw test: {raw_test_df.shape}")
 
-    # Always write the TF-IDF model to the local model directory for each run
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    embedder.save(TFIDF_OUTPUT_PATH)
+    # ── Preprocessing (cached) ────────────────────────────────────────────────
+    prep     = TextPreprocessor()
+    train_df = prep.process_dataframe(raw_train_df, cfg, split="train")
+    test_df  = prep.process_dataframe(raw_test_df,  cfg, split="test")
 
-    # Transform train data
-    print("Transforming training corpus...")
-    train_corpus = build_row_corpus(train_df, cols=TEXT_COLS)
-    X_train_tfidf = embedder.transform(train_corpus)
+    # ── EDA visualisations ────────────────────────────────────────────────────
+    if run_eda_plots:
+        _run_eda_plots(train_df, cfg)
 
-    # Transform test data
-    print("Transforming testing corpus...")
-    test_corpus = build_row_corpus(test_df, cols=TEXT_COLS)
-    X_test_tfidf = embedder.transform(test_corpus)
+    # ── Stratified train / val split ──────────────────────────────────────────
+    stratify_col = (
+        train_df[cfg.answer_col]
+        if cfg.answer_col in train_df.columns
+        else np.zeros(len(train_df))
+    )
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=cfg.seed)
+    train_idx, val_idx = next(skf.split(train_df, stratify_col))
 
-    # Save processed DataFrames (creates OUTPUT_DIR if missing)
-    try:
-        save_processed_dataframes(train_df, test_df)
-    except Exception as e:
-        print(f"Warning: failed to save processed DataFrames: {e}")
+    fit_df = train_df.iloc[train_idx].reset_index(drop=True)
+    val_df = train_df.iloc[val_idx].reset_index(drop=True)
+    logger.info(f"Fit: {len(fit_df)}  |  Val: {len(val_df)}")
 
-    return X_train_tfidf, X_test_tfidf, embedder
+    option_cols = [c for c in cfg.options if c in train_df.columns]
 
-# ==================================================================
-# STEP 6: WORD2VEC EMBEDDINGS
-# ==================================================================
-# step 6 - modified
-def step_word2vec(train_df: pd.DataFrame):
-    print("\n" + "=" * 50)
-    print("STEP 6 : WORD2VEC EMBEDDINGS")
-    print("=" * 50)
-
-    # Use the clean, explicit path from your imported config module
-    saved_model_path = W2V_MODEL_PATH
-
-    if os.path.exists(saved_model_path):
-        print(f"Found pre-saved model at: {saved_model_path}")
-        w2v_embedder = Word2VecEmbedder()
-        w2v_embedder.model = Word2Vec.load(saved_model_path)
-        print(f"Word2Vec loaded successfully | vocab size : {len(w2v_embedder.model.wv)}")
-    else:
-        print("Pre-saved model not found! Falling back to training from scratch...")
-        sentences = build_token_sentences(train_df, TEXT_COLS)
-        print(f"Total training sentences : {len(sentences)}")
-
-        w2v_embedder = Word2VecEmbedder()
-        w2v_embedder.fit(sentences)
-
-    # Always save the Word2Vec model locally on each run
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    w2v_embedder.save(os.path.join(MODEL_DIR, "w2v.model"))
-
-    # PCA visualization using config hyperparameters
-    vocab_words = list(w2v_embedder.model.wv.key_to_index.keys())[:100]
-    word_vecs   = np.array([w2v_embedder.get_word_vector(w) for w in vocab_words])
-    reduced, _  = reduce_with_pca(word_vecs, n_components=2, seed=RANDOM_SEED) #config.
-    plot_w2v_pca(reduced, vocab_words, n_label=40)
-
-    return w2v_embedder
+    return train_df, test_df, fit_df, val_df, option_cols
 
 
-# ==================================================================
-# STEP 7: COSINE SIMILARITY
-# ==================================================================
-def step_similarity(train_df:      pd.DataFrame,
-                    tfidf_embedder: TFIDFEmbedder,
-                    w2v_embedder:   Word2VecEmbedder):
-    print("\n" + "=" * 50)
-    print("STEP 7 : COSINE SIMILARITY")
-    print("=" * 50)
+def _run_eda_plots(train_df: "pd.DataFrame", cfg: Config) -> None:
+    """
+    Run all EDA visualisations.
 
-    # TF-IDF similarity
-    train_df = tfidf_prompt_option_similarity(
-        train_df, tfidf_embedder,
-        prompt_col=PROMPT_COL, option_cols=OPTION_COLS
+    Kaggle cell usage
+    -----------------
+        _run_eda_plots(train_df, cfg)
+    """
+    if cfg.answer_col in train_df.columns:
+        plot_answer_distribution(train_df, answer_col=cfg.answer_col)
+
+    plot_text_length_distributions(
+        train_df, cols=[cfg.prompt_col] + cfg.options
     )
 
-    # Word2Vec similarity
-    train_df = w2v_prompt_option_similarity(
-        train_df, w2v_embedder,
-        prompt_col=PROMPT_COL, option_cols=OPTION_COLS
-    )
-
-    # Correct vs Incorrect analysis
-    tfidf_result = similarity_correct_vs_incorrect(
-        train_df, sim_prefix="tfidf_sim"
-    )
-    w2v_result = similarity_correct_vs_incorrect(
-        train_df, sim_prefix="w2v_sim"
-    )
-
-    print(f"\nTF-IDF  | Correct mean : {tfidf_result['correct_mean']:.4f} "
-          f"| Incorrect mean : {tfidf_result['incorrect_mean']:.4f}")
-    print(f"Word2Vec | Correct mean : {w2v_result['correct_mean']:.4f} "
-          f"| Incorrect mean : {w2v_result['incorrect_mean']:.4f}")
-
-    # Plots
-    plot_similarity_distributions(
-        tfidf_result["correct"], tfidf_result["incorrect"],
-        method_name="TF-IDF", filename="sim_dist_tfidf.png"
-    )
-    plot_similarity_distributions(
-        w2v_result["correct"], w2v_result["incorrect"],
-        method_name="Word2Vec", filename="sim_dist_w2v.png"
-    )
-    plot_mean_similarity_per_option(train_df, sim_prefix="tfidf_sim",
-                                    title="Mean TF-IDF Similarity per Option")
-    plot_mean_similarity_per_option(train_df, sim_prefix="w2v_sim",
-                                    title="Mean Word2Vec Similarity per Option",
-                                    filename="mean_sim_per_option_w2v.png")
-
-    # Inter-option heatmap
-    sim_matrix = inter_option_similarity_matrix(train_df, tfidf_embedder)
-    plot_inter_option_heatmap(sim_matrix)
-
-    return train_df
-
-
-# ==================================================================
-# STEP 8: MAP@3 EVALUATION
-# ==================================================================
-def step_metrics(train_df: pd.DataFrame):
-    print("\n" + "=" * 50)
-    print("STEP 8 : MAP@3 EVALUATION")
-    print("=" * 50)
-
-    actuals = train_df[ANSWER_COL].tolist()
-
-    # --- Build prediction lists for each strategy ---
-
-    # Random baseline
-    np.random.seed(RANDOM_SEED)
-    random_preds = [
-        list(np.random.choice(OPTION_COLS, size=TOP_K, replace=False))
-        for _ in range(len(train_df))
+    all_tokens = [
+        tok
+        for text in train_df["prompt_clean"].fillna("")
+        for tok in text.split()
     ]
-
-    # Always predict A B C
-    always_abc_preds = [["A", "B", "C"]] * len(train_df)
-
-    # TF-IDF cosine ranking
-    tfidf_rank_col = rank_options_by_similarity(
-        train_df, sim_prefix="tfidf_sim", top_k=TOP_K
+    word_freq = Counter(all_tokens)
+    plot_top_words(
+        word_freq, title="Top Prompt Words",
+        n=25, filename="top_prompt_words.png",
     )
-    tfidf_preds = [p.split() for p in tfidf_rank_col]
-
-    # Word2Vec cosine ranking
-    w2v_rank_col = rank_options_by_similarity(
-        train_df, sim_prefix="w2v_sim", top_k=TOP_K
+    plot_wordcloud(
+        all_tokens, title="Prompt Word Cloud",
+        filename="prompt_wordcloud.png",
     )
-    w2v_preds = [p.split() for p in w2v_rank_col]
 
-    # Compare strategies
-    strategies = {
-        "Random"        : random_preds,
-        "Always_A_B_C"  : always_abc_preds,
-        "TF-IDF_cosine" : tfidf_preds,
-        "Word2Vec_cosine": w2v_preds,
+
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 2 — Train / load all three rankers, evaluate individually
+# ══════════════════════════════════════════════════════════════════════
+
+def train_models(
+    cfg          : Config,
+    fit_df       : "pd.DataFrame",
+    val_df       : "pd.DataFrame",
+    test_df      : "pd.DataFrame",
+    option_cols  : List[str],
+    evaluator    : MAPAtKEvaluator,
+    run_sim_plots: bool = True,
+) -> Tuple[Dict[str, Any], Dict[str, Dict[str, np.ndarray]]]:
+    
+    models : Dict[str, Any]                   = {}
+    scores : Dict[str, Dict[str, np.ndarray]] = {"val": {}, "test": {}}
+    metrics: Dict[str, Dict[str, float]]      = {}
+
+    # ── TF-IDF ───────────────────────────────────────────────────────────────
+    # Run opens its own W&B run, logs, then closes before returning.
+    models["tfidf"], scores, metrics["tfidf"] = _fit_tfidf(
+        cfg           = cfg,
+        fit_df        = fit_df,
+        val_df        = val_df,
+        test_df       = test_df,
+        option_cols   = option_cols,
+        evaluator     = evaluator,
+        scores        = scores,
+        run_sim_plots = run_sim_plots,
+    )
+
+    # ── Word2Vec ──────────────────────────────────────────────────────────────
+    models["w2v"], scores, metrics["w2v"] = _fit_w2v(
+        cfg         = cfg,
+        fit_df      = fit_df,
+        test_df     = test_df,
+        val_df      = val_df,
+        option_cols = option_cols,
+        evaluator   = evaluator,
+        scores      = scores,
+    )
+
+    # ── SBERT ─────────────────────────────────────────────────────────────────
+    models["sbert"], scores, metrics["sbert"] = _fit_sbert(
+        cfg           = cfg,
+        val_df        = val_df,
+        test_df       = test_df,
+        option_cols   = option_cols,
+        evaluator     = evaluator,
+        scores        = scores,
+        run_sim_plots = run_sim_plots,
+    )
+
+    return models, scores
+
+
+# ── Per-model private helpers ──────────────────────────────────────────────────
+
+def _log_common_metrics(
+    wandb_run : Optional[object],
+    evaluator : MAPAtKEvaluator,
+    actuals   : List[str],
+    val_preds : List[List[str]],
+    model_name: str,
+) -> None:
+    """
+    Compute and log the shared metric set (accuracy, f1, precision, recall,
+    map_at_k) to the supplied W&B run.
+
+    Using identical metric *names* across all three runs is what allows W&B's
+    "Compare runs" view to place them side-by-side on the same axes.
+    """
+    clf_met   = evaluator.compute_classification_metrics(actuals, val_preds)
+    map_score = evaluator.mean_average_precision_at_k(actuals, val_preds)
+
+    # Common metric payload — keys are identical for every model so that W&B
+    # can compare runs on the same axes without any renaming.
+    common_metrics = {
+        "accuracy" : clf_met.get("accuracy",  0.0),
+        "f1"       : clf_met.get("f1",        0.0),
+        "precision": clf_met.get("precision", 0.0),
+        "recall"   : clf_met.get("recall",    0.0),
+        "map_at_k" : map_score,
+        # Include the raw clf_met dict as well so per-class breakdowns survive
+        **clf_met,
     }
-    results_df = compare_strategies(strategies, actuals, k=TOP_K)
-    print("\nStrategy Comparison:")
-    print(results_df.to_string(index=False))
 
-    # MAP@3 bar chart
-    map_scores_dict = {
-        row["strategy"]: row[f"map_at_{TOP_K}"]
-        for _, row in results_df.iterrows()
+    log_model_metrics(wandb_run, common_metrics)
+    logger.info(
+        f"[{model_name}] accuracy={common_metrics['accuracy']:.4f}  "
+        f"f1={common_metrics['f1']:.4f}  "
+        f"map@k={map_score:.4f}"
+    )
+
+
+def _fit_tfidf(
+    cfg          : Config,
+    fit_df       : "pd.DataFrame",
+    val_df       : "pd.DataFrame",
+    test_df      : "pd.DataFrame",
+    option_cols  : List[str],
+    evaluator    : MAPAtKEvaluator,
+    scores       : Dict[str, Dict[str, np.ndarray]],
+    run_sim_plots: bool,
+) -> Tuple[TFIDFRanker, Dict, Dict]:
+    """
+    Fit/load TF-IDF, score val+test, compute & log metrics.
+    Opens its own W&B run, logs, then closes it before returning.
+
+    Kaggle cell usage
+    -----------------
+        tfidf_ranker, scores, tfidf_met = _fit_tfidf(
+            cfg, fit_df, val_df, test_df, option_cols,
+            evaluator, scores, run_sim_plots=True
+        )
+    """
+    # ── Open a fresh W&B run just for TF-IDF ─────────────────────────────────
+    wandb_run = init_wandb(cfg, run_name="phase1-tfidf", model_tag="tfidf")
+
+    try:
+        ranker = TFIDFRanker(cfg)
+        ranker.fit_or_load(fit_df)
+
+        val_scores  = ranker.predict_scores(val_df)
+        test_scores = ranker.predict_scores(test_df)
+        scores["val"]["tfidf"]  = val_scores
+        scores["test"]["tfidf"] = test_scores
+
+        option_cols_present = [c for c in cfg.options if c in val_df.columns]
+        val_preds = evaluator.scores_to_top_k_predictions(
+            val_scores, option_cols_present
+        )
+
+        met = evaluator.evaluate(
+            val_df, val_preds,
+            answer_col=cfg.answer_col, split="tfidf_val", wandb_run=None,
+        )
+
+        if cfg.answer_col in val_df.columns:
+            actuals = val_df[cfg.answer_col].tolist()
+            # wandb_run is guaranteed fresh here — log is safe
+            _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "TF-IDF")
+
+            if run_sim_plots:
+                corr, incorr = _split_sim_scores(
+                    val_scores, actuals, option_cols_present
+                )
+                plot_similarity_distributions(
+                    corr, incorr,
+                    method_name="TF-IDF", filename="tfidf_similarity_dist.png",
+                )
+
+    finally:
+        # ── Always close the run, even if an exception is raised ──────────────
+        finish_run(wandb_run)
+        logger.info("W&B run 'tfidf' closed.")
+
+    return ranker, scores, met
+
+def _fit_w2v(
+    cfg        : Config,
+    fit_df     : "pd.DataFrame",
+    test_df    : "pd.DataFrame",
+    val_df     : "pd.DataFrame",
+    option_cols: List[str],
+    evaluator  : MAPAtKEvaluator,
+    scores     : Dict[str, Dict[str, np.ndarray]],
+) -> Tuple[Word2VecRanker, Dict, Dict]:
+    """
+    Fit/load Word2Vec, score val+test, compute & log metrics.
+    Opens its own W&B run, logs, then closes it before returning.
+
+    Kaggle cell usage
+    -----------------
+        w2v_ranker, scores, w2v_met = _fit_w2v(
+            cfg, fit_df, test_df, val_df, option_cols,
+            evaluator, scores
+        )
+    """
+    # ── Open a fresh W&B run just for Word2Vec ────────────────────────────────
+    wandb_run = init_wandb(cfg, run_name="phase1-word2vec", model_tag="word2vec")
+
+    try:
+        ranker = Word2VecRanker(cfg)
+        ranker.fit_or_load(fit_df, test_df)
+
+        val_scores  = ranker.predict_scores(val_df)
+        test_scores = ranker.predict_scores(test_df)
+        scores["val"]["w2v"]  = val_scores
+        scores["test"]["w2v"] = test_scores
+
+        option_cols_present = [c for c in cfg.options if c in val_df.columns]
+        val_preds = evaluator.scores_to_top_k_predictions(
+            val_scores, option_cols_present
+        )
+
+        met = evaluator.evaluate(
+            val_df, val_preds,
+            answer_col=cfg.answer_col, split="w2v_val", wandb_run=None,
+        )
+
+        if cfg.answer_col in val_df.columns:
+            actuals = val_df[cfg.answer_col].tolist()
+            _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "Word2Vec")
+
+        # ── PCA visualisation ─────────────────────────────────────────────────
+        try:
+            from sklearn.decomposition import PCA
+            vocab_words = list(ranker.model.wv.key_to_index.keys())[:300]
+            word_matrix = np.array([ranker.model.wv[w] for w in vocab_words])
+            pca         = PCA(n_components=2, random_state=cfg.seed)
+            reduced     = pca.fit_transform(word_matrix)
+            plot_w2v_pca(reduced, vocab_words, n_label=50)
+        except Exception as exc:
+            logger.warning(f"W2V PCA plot skipped: {exc}")
+
+    finally:
+        finish_run(wandb_run)
+        logger.info("W&B run 'word2vec' closed.")
+
+    return ranker, scores, met
+
+def _fit_sbert(
+    cfg          : Config,
+    val_df       : "pd.DataFrame",
+    test_df      : "pd.DataFrame",
+    option_cols  : List[str],
+    evaluator    : MAPAtKEvaluator,
+    scores       : Dict[str, Dict[str, np.ndarray]],
+    run_sim_plots: bool,
+) -> Tuple[SBERTRanker, Dict, Dict]:
+    """
+    Load SBERT, score val+test, compute & log metrics.
+    Opens its own W&B run, logs, then closes it before returning.
+
+    Kaggle cell usage
+    -----------------
+        sbert_ranker, scores, sbert_met = _fit_sbert(
+            cfg, val_df, test_df, option_cols,
+            evaluator, scores, run_sim_plots=True
+        )
+    """
+    # ── Open a fresh W&B run just for SBERT ──────────────────────────────────
+    wandb_run = init_wandb(cfg, run_name="phase1-sbert", model_tag="sbert")
+
+    try:
+        ranker = SBERTRanker(cfg)
+
+        val_scores  = ranker.predict_scores(val_df)
+        test_scores = ranker.predict_scores(test_df)
+        scores["val"]["sbert"]  = val_scores
+        scores["test"]["sbert"] = test_scores
+
+        option_cols_present = [c for c in cfg.options if c in val_df.columns]
+        val_preds = evaluator.scores_to_top_k_predictions(
+            val_scores, option_cols_present
+        )
+
+        met = evaluator.evaluate(
+            val_df, val_preds,
+            answer_col=cfg.answer_col, split="sbert_val", wandb_run=None,
+        )
+
+        if cfg.answer_col in val_df.columns:
+            actuals = val_df[cfg.answer_col].tolist()
+            _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "SBERT")
+
+            if run_sim_plots:
+                corr, incorr = _split_sim_scores(
+                    val_scores, actuals, option_cols_present
+                )
+                plot_similarity_distributions(
+                    corr, incorr,
+                    method_name="SBERT", filename="sbert_similarity_dist.png",
+                )
+
+    finally:
+        finish_run(wandb_run)
+        logger.info("W&B run 'sbert' closed.")
+
+    return ranker, scores, met
+
+def _split_sim_scores(
+    score_matrix: np.ndarray,
+    actuals     : List[str],
+    option_cols : List[str],
+) -> Tuple[List[float], List[float]]:
+    """Split score matrix into correct / incorrect option score lists."""
+    correct, incorrect = [], []
+    for i, actual in enumerate(actuals):
+        for j, opt in enumerate(option_cols):
+            (correct if opt == actual else incorrect).append(score_matrix[i, j])
+    return correct, incorrect
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 3 — Ensemble: grid-search weights → fuse → evaluate
+# ══════════════════════════════════════════════════════════════════════
+
+def run_ensemble(
+    cfg        : Config,
+    scores     : Dict[str, Dict[str, np.ndarray]],
+    val_df     : "pd.DataFrame",
+    option_cols: List[str],
+    evaluator  : MAPAtKEvaluator,
+    run_plots  : bool = True,
+) -> Tuple[List[List[str]], List[List[str]], Dict[str, float]]:
+
+    """
+    Grid-search best weights → fuse val & test scores → evaluate.
+
+    Returns
+    -------
+    ens_val_preds  : ranked top-K labels for every val row
+    ens_test_preds : ranked top-K labels for every test row
+    map_scores     : {"TF-IDF": float, "Word2Vec": float,
+                      "SBERT": float, "Ensemble": float}
+
+    Kaggle cell usage
+    -----------------
+        ens_val_preds, ens_test_preds, map_scores = run_ensemble(
+            cfg, scores, val_df, option_cols, evaluator, wandb_runs
+        )
+    """
+
+    actuals = val_df[cfg.answer_col].tolist()
+
+    # ── Grid-search best weights ──────────────────────────────────────────────
+    best_weights, best_map = ScoreFuser.grid_search(
+        score_dict  = scores["val"],
+        actuals     = actuals,
+        evaluator   = evaluator,
+        option_cols = option_cols,
+    )
+
+    # ── Fuse val scores ───────────────────────────────────────────────────────
+    fuser         = ScoreFuser(weights=best_weights)
+    fused_val     = fuser.fuse(scores["val"])
+    ens_val_preds = evaluator.scores_to_top_k_predictions(fused_val, option_cols)
+    ens_metrics   = evaluator.evaluate(
+        val_df, ens_val_preds,
+        answer_col=cfg.answer_col, split="ensemble_val", wandb_run=None,
+    )
+
+    # ── Fuse test scores ──────────────────────────────────────────────────────
+    fused_test     = fuser.fuse(scores["test"])
+    ens_test_preds = evaluator.scores_to_top_k_predictions(fused_test, option_cols)
+
+    # ── Collect individual MAP@K for summary chart ────────────────────────────
+    map_scores: Dict[str, float] = {
+        "TF-IDF"  : evaluator.mean_average_precision_at_k(
+                        actuals,
+                        evaluator.scores_to_top_k_predictions(
+                            scores["val"]["tfidf"], option_cols
+                        )),
+        "Word2Vec": evaluator.mean_average_precision_at_k(
+                        actuals,
+                        evaluator.scores_to_top_k_predictions(
+                            scores["val"]["w2v"], option_cols
+                        )),
+        "SBERT"   : evaluator.mean_average_precision_at_k(
+                        actuals,
+                        evaluator.scores_to_top_k_predictions(
+                            scores["val"]["sbert"], option_cols
+                        )),
+        "Ensemble": ens_metrics[f"ensemble_val/map@{cfg.top_k}"],
     }
-    plot_map_comparison(map_scores_dict, k=TOP_K)
 
-    # Detailed report for TF-IDF
-    print("\nDetailed Evaluation Report (TF-IDF):")
-    report = evaluation_report(tfidf_preds, actuals, k=TOP_K)
-    print(report.to_string(index=False))
+    # ── Visualisations ────────────────────────────────────────────────────────
+    if run_plots:
+        plot_map_comparison(map_scores, k=cfg.top_k)
 
-    # Rank distribution
-    dist = rank_distribution(tfidf_preds, actuals, k=TOP_K)
-    print(f"\nRank Distribution (TF-IDF): {dist}")
-    plot_rank_distribution(dist, k=TOP_K)
+        rank_dist: Dict = {1: 0, 2: 0, 3: 0, "not_found": 0}
+        for actual, pred in zip(actuals, ens_val_preds):
+            top = pred[: cfg.top_k]
+            if actual in top:
+                rank_dist[top.index(actual) + 1] += 1
+            else:
+                rank_dist["not_found"] += 1
+        plot_rank_distribution(rank_dist, k=cfg.top_k)
 
-    return results_df
+    return ens_val_preds, ens_test_preds, map_scores
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 4 — Submission file
+# ══════════════════════════════════════════════════════════════════════
+
+def generate_submission(
+    cfg           : Config,
+    test_df       : "pd.DataFrame",
+    ens_test_preds: List[List[str]],
+    filename      : str = "Milestone1_submission.csv",
+) -> "pd.DataFrame":
+    """
+    Write the Kaggle submission CSV and return it as a DataFrame.
+
+    Kaggle cell usage
+    -----------------
+        submission = generate_submission(cfg, test_df, ens_test_preds)
+    """
+    sub_gen    = SubmissionGenerator(cfg)
+    submission = sub_gen.generate(test_df, ens_test_preds, filename=filename)
+    return submission
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 5 — Summary logging
+# ══════════════════════════════════════════════════════════════════════
+
+def print_summary(
+    map_scores: Dict[str, float],
+    cfg       : Config,
+) -> None:
+    """
+    Print final MAP@K table.
+    W&B runs are already closed inside each _fit_* helper,
+    so nothing needs to be closed here.
+    """
+    sep = "═" * 52
+    logger.info(f"\n{sep}\n  PHASE 1 SUMMARY\n{sep}")
+    for name, score in map_scores.items():
+        logger.info(f"  {name:<12}  MAP@{cfg.top_k} = {score:.4f}")
+    logger.info(sep)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# FULL PIPELINE — single call that chains all phases
+# ══════════════════════════════════════════════════════════════════════
+
+def run_full_pipeline(
+    run_name           : str  = "phase1-baseline",
+    run_eda_plots      : bool = True,
+    run_sim_plots      : bool = True,
+    run_ensemble_plots : bool = True,
+    submission_filename: str  = "phase1_baseline_submission.csv",
+) -> Dict[str, Any]:
+    # 0. Setup — no longer returns wandb_runs
+    cfg, evaluator = setup(run_name=run_name)
+
+    # 1. Data
+    train_df, test_df, fit_df, val_df, option_cols = load_and_preprocess(
+        cfg, run_eda_plots=run_eda_plots
+    )
+
+    # 2. Models — each _fit_* opens/closes its own W&B run
+    models, scores = train_models(
+        cfg           = cfg,
+        fit_df        = fit_df,
+        val_df        = val_df,
+        test_df       = test_df,
+        option_cols   = option_cols,
+        evaluator     = evaluator,
+        run_sim_plots = run_sim_plots,
+    )
+
+    # 3. Ensemble
+    ens_val_preds, ens_test_preds, map_scores = run_ensemble(
+        cfg         = cfg,
+        scores      = scores,
+        val_df      = val_df,
+        option_cols = option_cols,
+        evaluator   = evaluator,
+        run_plots   = run_ensemble_plots,
+    )
+
+    # 4. Submission
+    submission = generate_submission(
+        cfg, test_df, ens_test_preds, filename=submission_filename
+    )
+
+    # 5. Summary — W&B already closed, just prints
+    print_summary(map_scores, cfg)
+
+    return {
+        "cfg"           : cfg,
+        "evaluator"     : evaluator,
+        "train_df"      : train_df,
+        "test_df"       : test_df,
+        "fit_df"        : fit_df,
+        "val_df"        : val_df,
+        "option_cols"   : option_cols,
+        "models"        : models,
+        "scores"        : scores,
+        "ens_val_preds" : ens_val_preds,
+        "ens_test_preds": ens_test_preds,
+        "map_scores"    : map_scores,
+        "submission"    : submission,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Script entry-point  (python main.py)
+# ══════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    run_full_pipeline()
