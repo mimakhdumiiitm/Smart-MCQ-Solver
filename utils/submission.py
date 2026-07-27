@@ -1,6 +1,4 @@
-# utils/submission.py
-# Kaggle submission file generation and validation.
-
+# src/utils/submission.py
 import logging
 from pathlib import Path
 from typing import List
@@ -9,64 +7,84 @@ import pandas as pd
 
 from config.config import Config
 
-logger = logging.getLogger("Submission")
+logger = logging.getLogger(__name__)
 
 
 class SubmissionGenerator:
     """
-    Build and validate a Kaggle-format submission CSV.
+    Convert top-K predictions into a Kaggle submission CSV.
 
-    Expected format
-    ---------------
-    id,prediction
-    1,B A C
-    2,A C D
-    ...
+    Expected output format:
+        id,prediction
+        0001,A B C
+        0002,C A B
+        ...
+
+    Each prediction is a space-joined string of top_k option letters
+    ordered by model confidence (most confident first).
     """
 
-    def __init__(self, config: Config) -> None:
-        self.cfg = config
+    def __init__(self, config: Config):
+        self.config = config
 
-    def generate(
+    def build(
         self,
-        test_df    : pd.DataFrame,
+        test_df: pd.DataFrame,
         predictions: List[List[str]],
-        filename   : str = "submission.csv",
     ) -> pd.DataFrame:
         """
-        Create the submission DataFrame and write to disk.
+        Args:
+            test_df    : Test DataFrame (must contain id_col)
+            predictions: List of top-K option lists
+                         e.g. [["A","C","B"], ...]
 
-        Parameters
-        ----------
-        test_df     : raw or processed test DataFrame (must have id column).
-        predictions : top-K label lists aligned with test_df rows.
-        filename    : output CSV name inside cfg.submission_dir.
-
-        Returns
-        -------
-        pd.DataFrame with columns [id, prediction].
+        Returns:
+            pd.DataFrame with columns [id, prediction]
         """
+
         if len(test_df) != len(predictions):
             raise ValueError(
                 f"Row count mismatch: "
                 f"test_df={len(test_df)}, predictions={len(predictions)}"
             )
 
-        sub = pd.DataFrame({
-            self.cfg.id_col : test_df[self.cfg.id_col].values,
-            "prediction"    : [" ".join(p) for p in predictions],
-        })
+        ids = test_df[self.config.id_col].astype(str).tolist()
 
-        # Validate every row has exactly top_k labels
-        pred_lengths = sub["prediction"].str.split().str.len()
-        if pred_lengths.min() != self.cfg.top_k:
-            bad = sub[pred_lengths != self.cfg.top_k]
-            raise ValueError(
-                f"Some predictions have wrong length:\n{bad.head()}"
-            )
+        # Ensure each prediction has exactly top_k elements
+        processed_preds = []
+        for p in predictions:
+            if len(p) < self.config.top_k:
+                raise ValueError(
+                    f"Prediction length {len(p)} < top_k={self.config.top_k}: {p}"
+                )
+            processed_preds.append(" ".join(p[: self.config.top_k]))
 
-        out_path = Path(self.cfg.submission_dir) / filename
-        sub.to_csv(out_path, index=False)
-        logger.info(f"Submission saved → {out_path}  ({len(sub)} rows)")
-        logger.info(f"Preview:\n{sub.head(3).to_string(index=False)}")
-        return sub
+        submission = pd.DataFrame(
+            {
+                self.config.id_col: ids,
+                "prediction": processed_preds,
+            }
+        )
+
+        logger.info(
+            f"Submission built: {len(submission)} rows | "
+            f"Preview:\n{submission.head(3).to_string(index=False)}"
+        )
+
+        return submission
+
+    def save(
+        self,
+        submission: pd.DataFrame,
+        filename: str = "submission.csv",
+    ) -> Path:
+        """Save submission to submission_dir/{filename}."""
+
+        output_dir = Path(self.config.submission_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        path = output_dir / filename
+        submission.to_csv(path, index=False)
+
+        logger.info(f"Submission saved → {path}")
+        return path
