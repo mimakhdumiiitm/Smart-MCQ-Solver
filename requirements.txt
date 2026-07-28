@@ -2,3 +2,6 @@ transformers
 sentence-transformers 
 wandb 
 faiss-cpu
+datasets 
+peft 
+accelerate 
