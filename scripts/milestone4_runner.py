@@ -34,9 +34,9 @@ logger = logging.getLogger("run_training")
 
 def run_milestone4() -> Dict[str, Any]:
 
+
     # ── 1. Configuration ───────────────────────────────────────────
     cfg = Config()
-    cfg.setup_dirs()
     logger.info(f"Device: {cfg.device} | GPUs: {cfg.n_gpus}")
 
     # ── 2. Load data ───────────────────────────────────────────────
