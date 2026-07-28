@@ -752,11 +752,6 @@ class MCQFineTuner:
 
         model = AutoModelForMultipleChoice.from_pretrained(
             model_name,
-            torch_dtype=(
-                torch.float16
-                if getattr(self.config, "fp16", False)
-                else torch.float32
-            ),
             ignore_mismatched_sizes=True,
         )
 

@@ -115,7 +115,7 @@ class Config:
     batch_size                  : int   = 16   # general-purpose batch size (Milestone 2-3)
     gradient_accumulation_steps : int   = 4    # milestone 4 default (was 8)
     warmup_ratio                : float = 0.1
-    fp16                        : bool  = True
+    fp16                        : bool  = False
     gradient_checkpointing      : bool  = True
 
     # ── LoRA / PEFT (Milestone 4) ──────────────────────────────────
