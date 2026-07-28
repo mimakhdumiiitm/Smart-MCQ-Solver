@@ -16,7 +16,7 @@ from src.pipeline.training_pipeline import TrainingPipeline
 from src.pipeline.inference_pipeline import InferencePipeline
 from src.utils.submission import SubmissionGenerator
 from src.ensemble.fuser import Fuser
-from src.evaluation.evaluator import Evaluator
+from src.evaluation.evaluator import MAPAtKEvaluator as Evaluator
 
 # ── Logging setup ──────────────────────────────────────────────────
 logging.basicConfig(
