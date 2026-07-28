@@ -876,7 +876,7 @@ class MCQFineTuner:
             weight_decay=getattr(self.config, "weight_decay", 0.01),
             warmup_ratio=getattr(self.config, "warmup_ratio", 0.1),
             fp16=getattr(self.config, "fp16", False),
-            evaluation_strategy="steps",
+            eval_strategy="epoch",
             eval_steps=50,
             save_strategy="steps",
             save_steps=50,
