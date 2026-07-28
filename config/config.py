@@ -1,4 +1,3 @@
-# config.py
 import os
 import torch
 import logging
@@ -61,6 +60,11 @@ class Config:
     """
     Centralised configuration object.
     Instantiate once in main.py; pass the instance everywhere.
+
+    Covers:
+        • Milestones 1–3 : TF-IDF, Word2Vec, SBERT, Zero-shot NLI,
+                           Transformer embeddings, RAG, Ensemble
+        • Milestone 4    : DeBERTa fine-tuning with LoRA / PEFT
     """
 
     # ── Paths ──────────────────────────────────────────────────────
@@ -97,8 +101,11 @@ class Config:
     sbert_model     : str = "all-MiniLM-L6-v2"
     sbert_batch_size: int = 64
 
-    # ── Fine-tuning ────────────────────────────────────────────────
-    finetune_model              : str   = "microsoft/deberta-v3-small"
+    # ── Transformer fine-tuning (Milestones 1-3 baseline + Milestone 4) ──
+    # NOTE: milestone 4 upgrades the default backbone to deberta-v3-base;
+    #       keep deberta-v3-small here so earlier milestones are unaffected
+    #       and callers can override via  cfg.finetune_model = "...base"
+    finetune_model              : str   = "microsoft/deberta-v3-base"
     max_length                  : int   = 512
     learning_rate               : float = 2e-5
     weight_decay                : float = 0.01
@@ -106,16 +113,17 @@ class Config:
     train_batch_size            : int   = 4
     eval_batch_size             : int   = 8
     batch_size                  : int   = 16   # general-purpose batch size (Milestone 2-3)
-    gradient_accumulation_steps : int   = 8
+    gradient_accumulation_steps : int   = 4    # milestone 4 default (was 8)
     warmup_ratio                : float = 0.1
     fp16                        : bool  = True
     gradient_checkpointing      : bool  = True
 
-    # ── LoRA ───────────────────────────────────────────────────────
-    lora_r             : int       = 16
-    lora_alpha         : int       = 32
-    lora_dropout       : float     = 0.1
-    lora_target_modules: List[str] = field(
+    # ── LoRA / PEFT (Milestone 4) ──────────────────────────────────
+    lora_r             : int            = 16
+    lora_alpha         : int            = 32
+    lora_dropout       : float          = 0.1
+    # None  → auto-detected per architecture inside the trainer
+    lora_target_modules: Optional[List[str]] = field(
         default_factory=lambda: ["query_proj", "value_proj"]
     )
 
@@ -127,9 +135,9 @@ class Config:
     ensemble_temperature: float = 1.0
 
     # ── W&B ────────────────────────────────────────────────────────
-    wandb_project: str            = "22f3001418-t22026"
-    wandb_entity : Optional[str]  = None
-    use_wandb    : bool           = True
+    wandb_project: str           = "22f3001418-t22026"
+    wandb_entity : Optional[str] = None
+    use_wandb    : bool          = True
 
     # ── Hardware ───────────────────────────────────────────────────
     seed       : int  = 42
@@ -148,6 +156,9 @@ class Config:
     # ── Transformer embedding model (Milestone 2-3) ───────────────
     tr_model_key: str = "deberta"         # see TransformerEmbeddingRanker.SUPPORTED_MODELS
 
+    # ── Kaggle artefact mount ──────────────────────────────────────
+    # Prefer the pre-built Kaggle dataset when available; callers may
+    # set this to None to force local re-training.
     kaggle_artifacts_dir: Optional[Path] = Path(
         "/kaggle/input/notebooks/mimakhdumiiitm/"
         "dl-22f3001418-notebook-t22026/outputs"
@@ -156,6 +167,7 @@ class Config:
     # ──────────────────────────────────────────────────────────────
     def __post_init__(self) -> None:
         """Create all output directories; log hardware info."""
+
         # ── Normalise Path types (guards against str being passed in) ──
         self.data_dir       = Path(self.data_dir)
         self.output_dir     = Path(self.output_dir)
@@ -163,6 +175,26 @@ class Config:
         self.submission_dir = Path(self.submission_dir)
         self.processed_dir  = Path(self.processed_dir)
         self.plot_dir       = Path(self.plot_dir)
+
+        if self.kaggle_artifacts_dir is not None:
+            self.kaggle_artifacts_dir = Path(self.kaggle_artifacts_dir)
+
+        # ── Normalise lora_target_modules ─────────────────────────
+        # Accept None (auto-detect) or a plain list passed as str by mistake
+        if self.lora_target_modules is not None and not isinstance(
+            self.lora_target_modules, list
+        ):
+            self.lora_target_modules = list(self.lora_target_modules)
+
+        # ── fp16: force-disable when no CUDA is available ─────────
+        if not torch.cuda.is_available():
+            if self.fp16:
+                logger.warning("No CUDA device found — disabling fp16.")
+            self.fp16 = False
+
+        # ── pin_memory: only meaningful with CUDA ─────────────────
+        if not torch.cuda.is_available():
+            self.pin_memory = False
 
         # ── Seed ───────────────────────────────────────────────────
         set_seed(self.seed)
@@ -190,6 +222,12 @@ class Config:
                 name = torch.cuda.get_device_name(i)
                 mem  = torch.cuda.get_device_properties(i).total_memory / 1e9
                 logger.info(f"  GPU {i}: {name} ({mem:.1f} GB)")
+
+        # ── Milestone 4 summary ────────────────────────────────────
+        logger.info(
+            f"Fine-tune backbone : {self.finetune_model}  "
+            f"(LoRA r={self.lora_r}, α={self.lora_alpha})"
+        )
 
     # ── Derived path helpers ───────────────────────────────────────
     def _resolve_model_path(self, prebuilt_path: Path, fallback_name: str) -> Path:
@@ -227,3 +265,21 @@ class Config:
             PREBUILT_W2V_MODEL_PATH,
             "word2vec.model",
         )
+
+    # ── Milestone 4 convenience helpers ───────────────────────────
+    @property
+    def finetuned_model_path(self) -> Path:
+        """Where the fine-tuned / LoRA-adapted checkpoint is saved."""
+        return self.model_dir / "finetuned_deberta"
+
+    @property
+    def lora_adapter_path(self) -> Path:
+        """Where the LoRA adapter weights are saved (PEFT format)."""
+        return self.model_dir / "lora_adapter"
+
+    def effective_batch_size(self) -> int:
+        """
+        The logical batch size seen by the optimiser after gradient
+        accumulation — useful for logging and LR-scaling decisions.
+        """
+        return self.train_batch_size * max(self.gradient_accumulation_steps, 1)

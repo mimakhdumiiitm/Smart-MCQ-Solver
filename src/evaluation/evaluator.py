@@ -1,6 +1,4 @@
 # evaluation/evaluator.py
-# MAP@K metric — identical to the Kaggle evaluation script.
-# Kept in its own module so every phase imports the SAME implementation.
 
 import logging
 from typing import Dict, List, Optional
@@ -13,7 +11,8 @@ from sklearn.metrics import (
     accuracy_score,
     precision_score,
     recall_score,
-    )
+)
+
 logger = logging.getLogger("Evaluator")
 
 # W&B is optional; import lazily to avoid hard dependency
@@ -151,6 +150,84 @@ class MAPAtKEvaluator:
         return predictions
 
     # ─────────────────────────────────────────
+    # Classification metrics (top-1 predictions)
+    # ─────────────────────────────────────────
+
+    def compute_classification_metrics(
+        self,
+        actuals    : List[str],
+        predictions: List[List[str]],
+    ) -> Dict[str, float]:
+        """
+        Compute standard classification metrics using top-1 predictions.
+
+        Parameters
+        ----------
+        actuals     : Ground-truth label strings.
+        predictions : Ranked prediction lists (top-1 is predictions[i][0]).
+
+        Returns
+        -------
+        dict with f1_score, accuracy, precision, recall.
+        """
+        # Use only the top-1 prediction for classification metrics
+        top1_preds = [p[0] if p else "" for p in predictions]
+
+        return {
+            "f1_score" : f1_score(
+                actuals, top1_preds, average="macro", zero_division=0
+            ),
+            "accuracy" : accuracy_score(actuals, top1_preds),
+            "precision": precision_score(
+                actuals, top1_preds, average="macro", zero_division=0
+            ),
+            "recall"   : recall_score(
+                actuals, top1_preds, average="macro", zero_division=0
+            ),
+        }
+
+    # ─────────────────────────────────────────
+    # Logits → predictions → MAP@K  (Milestone 4)
+    # ─────────────────────────────────────────
+
+    def evaluate_logits(
+        self,
+        val_df    : pd.DataFrame,
+        logits    : np.ndarray,
+        cfg,
+        split     : str,
+        answer_col: str = "answer",
+        wandb_run : Optional[object] = None,
+    ) -> Dict[str, float]:
+        """
+        Convenience wrapper: converts raw logits → predictions → MAP@K.
+
+        Avoids duplicating the scores_to_top_k_predictions call at every
+        call site in the milestone runners.
+
+        Parameters
+        ----------
+        val_df     : Validation DataFrame with ground-truth answer column.
+        logits     : (n_samples, n_options) float array — higher = preferred.
+        cfg        : Config object that exposes cfg.options (list of labels).
+        split      : Metric prefix string, e.g. "ft_val".
+        answer_col : Name of the ground-truth column (default: "answer").
+        wandb_run  : Active wandb run (or None to skip logging).
+
+        Returns
+        -------
+        metrics dict identical to self.evaluate().
+        """
+        preds = self.scores_to_top_k_predictions(logits, cfg.options)
+        return self.evaluate(
+            val_df,
+            preds,
+            answer_col=answer_col,
+            split=split,
+            wandb_run=wandb_run,
+        )
+
+    # ─────────────────────────────────────────
     # Unit-test helper
     # ─────────────────────────────────────────
 
@@ -172,26 +249,3 @@ class MAPAtKEvaluator:
         assert abs(map_val - expected) < 1e-9
 
         logger.info("All MAP@3 unit tests passed ✓")
-
-     # updated 
-    def compute_classification_metrics(
-        self,
-        actuals   : List[str],
-        predictions: List[List[str]],
-    ) -> Dict[str, float]:
-
-        # Use only the top-1 prediction for classification metrics
-        top1_preds = [p[0] if p else "" for p in predictions]
-
-        return {
-            "f1_score" : f1_score(
-                actuals, top1_preds, average="macro", zero_division=0
-            ),
-            "accuracy" : accuracy_score(actuals, top1_preds),
-            "precision": precision_score(
-                actuals, top1_preds, average="macro", zero_division=0
-            ),
-            "recall"   : recall_score(
-                actuals, top1_preds, average="macro", zero_division=0
-            ),
-        }

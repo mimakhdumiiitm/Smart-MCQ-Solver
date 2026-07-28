@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
+from dataclasses import dataclass as dc_dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ def _compute_metrics(
         top1_preds.append(option_cols[sorted_idx[0]])
 
         # Average Precision @k
-        top_k      = [option_cols[j] for j in sorted_idx[:k]]
+        top_k       = [option_cols[j] for j in sorted_idx[:k]]
         score, hits = 0.0, 0
         for rank, pred in enumerate(top_k, 1):
             if pred == labels[i]:
@@ -472,7 +473,205 @@ class TransformerEmbeddingRanker:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Milestone 4 — LoRA Fine-Tuned MCQ Ranker
+# Milestone 4 — Dataset Builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MCQDatasetBuilder:
+    """
+    Build HuggingFace Dataset for Multiple Choice training.
+
+    Format required by AutoModelForMultipleChoice:
+    Each sample contains:
+    - input_ids      : (n_options, seq_len) — one encoding per option
+    - attention_mask : (n_options, seq_len)
+    - labels         : int (0-based index of correct option)
+
+    Prompt format:
+        "Context: {context} Question: {question}" paired with each option.
+
+    RAG context integration:
+        Prepend retrieved similar Q&A pairs so the model gets relevant
+        evidence at inference time.
+    """
+
+    def __init__(self, config, tokenizer):
+        self.config    = config
+        self.tokenizer = tokenizer
+        self._logger   = logging.getLogger(self.__class__.__name__)
+        # Map option letter → 0-based index
+        self.label_encoder: Dict[str, int] = {
+            opt: i for i, opt in enumerate(config.options)
+        }
+
+    # ── prompt formatting ─────────────────────────────────────────────────────
+
+    def format_prompt_with_context(
+        self,
+        question:          str,
+        context:           str = "",
+        max_context_chars: int = 256,
+    ) -> str:
+        """
+        Format question with optional RAG context.
+        Context is truncated to avoid exceeding max_length.
+        """
+        if context and context.strip():
+            ctx = context.strip()[:max_context_chars]
+            return f"Context: {ctx} Question: {question}"
+        return f"Question: {question}"
+
+    # ── single-sample tokenisation ────────────────────────────────────────────
+
+    def tokenize_sample(
+        self,
+        question: str,
+        options:  List[str],
+        context:  str = "",
+    ) -> Dict[str, Any]:
+        """
+        Tokenize one MCQ sample.
+
+        AutoModelForMultipleChoice expects input_ids of shape
+        (n_choices, seq_len).
+        """
+        formatted_question = self.format_prompt_with_context(question, context)
+
+        encodings = self.tokenizer(
+            [formatted_question] * len(options),  # repeat question per option
+            options,
+            max_length=self.config.max_length,
+            truncation=True,
+            padding="max_length",                 # consistent shape
+        )
+
+        return {
+            "input_ids":      encodings["input_ids"],
+            "attention_mask": encodings["attention_mask"],
+        }
+
+    # ── full dataset build ────────────────────────────────────────────────────
+
+    def build_dataset(
+        self,
+        df,
+        contexts:       Optional[List[str]] = None,
+        include_labels: bool                = True,
+    ) -> Any:  # returns HuggingFace Dataset
+        """
+        Build a HuggingFace Dataset from a DataFrame.
+
+        Parameters
+        ----------
+        df             : MCQ DataFrame (must contain prompt + option columns)
+        contexts       : Optional RAG context strings, one per row
+        include_labels : Whether to include ground-truth labels
+        """
+        from datasets import Dataset
+
+        # Only keep option columns that actually exist in the DataFrame
+        option_cols = [c for c in self.config.options if c in df.columns]
+
+        if contexts is None:
+            contexts = [""] * len(df)
+
+        samples: List[Dict[str, Any]] = []
+
+        for idx, (row_idx, row) in enumerate(df.iterrows()):
+            question = str(row.get("prompt", ""))
+            context  = contexts[idx] if idx < len(contexts) else ""
+            options  = [str(row.get(opt, "")) for opt in option_cols]
+
+            encoding = self.tokenize_sample(question, options, context)
+
+            sample: Dict[str, Any] = {
+                "input_ids":      encoding["input_ids"],
+                "attention_mask": encoding["attention_mask"],
+                "id":             str(row.get(self.config.id_col, row_idx)),
+            }
+
+            # FIX: use df.columns instead of row.index for column existence check
+            if include_labels and self.config.answer_col in df.columns:
+                answer = row[self.config.answer_col]
+                sample["labels"] = (
+                    self.label_encoder[answer]
+                    if answer in self.label_encoder
+                    else 0
+                )
+
+            samples.append(sample)
+
+        dataset = Dataset.from_list(samples)
+        self._logger.info(
+            f"Dataset built: {len(dataset)} samples | "
+            f"features: {list(dataset.features.keys())}"
+        )
+        return dataset
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Milestone 4 — Data Collator
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dc_dataclass
+class DataCollatorForMultipleChoice:
+    """
+    Custom data collator for multiple choice.
+
+    Handles the (batch, n_options, seq_len) tensor structure that
+    AutoModelForMultipleChoice expects.
+
+    Dynamic padding: pads to the longest sequence in the batch rather than
+    the global max_length — saves significant memory.
+    """
+
+    tokenizer:  Any
+    padding:    bool           = True
+    max_length: Optional[int]  = None
+
+    def __call__(
+        self, features: List[Dict[str, Any]]
+    ) -> Dict[str, torch.Tensor]:
+        """Collate a batch of multiple-choice samples."""
+        has_labels = "labels" in features[0]
+
+        # Extract and remove labels / id before padding
+        labels = [f.pop("labels") for f in features] if has_labels else None
+        for f in features:
+            f.pop("id", None)  # remove non-tensor field silently
+
+        batch_size = len(features)
+        n_options  = len(features[0]["input_ids"])
+
+        # ── flatten to (batch * n_options, seq_len) ───────────────────────────
+        flat: List[Dict[str, Any]] = []
+        for feat in features:
+            for opt_idx in range(n_options):
+                flat.append(
+                    {
+                        "input_ids":      feat["input_ids"][opt_idx],
+                        "attention_mask": feat["attention_mask"][opt_idx],
+                    }
+                )
+
+        # ── pad ───────────────────────────────────────────────────────────────
+        batch = self.tokenizer.pad(
+            flat,
+            padding=self.padding,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+
+        # ── reshape to (batch, n_options, seq_len) ────────────────────────────
+        batch = {k: v.view(batch_size, n_options, -1) for k, v in batch.items()}
+
+        if labels is not None:
+            batch["labels"] = torch.tensor(labels, dtype=torch.long)
+
+        return batch
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Milestone 4 — LoRA Fine-Tuned MCQ Ranker  (single, unified definition)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class MCQFineTuner:
@@ -500,7 +699,7 @@ class MCQFineTuner:
     Lifecycle
     ---------
         tuner = MCQFineTuner(cfg, evaluator)
-        tuner.train(train_ds, val_ds, collator)
+        tuner.train(train_ds, val_ds, collator, tokenizer)
         logits = tuner.predict(test_ds, collator)
         tuner.save_model()
         tuner.load_model(path)   # restore for inference
@@ -515,28 +714,30 @@ class MCQFineTuner:
         "roberta": ["query", "value"],
     }
 
-    def __init__(self, config, evaluator) -> None:
+    def __init__(self, config, evaluator, wandb_run=None) -> None:
         """
         Args:
             config   : Config dataclass
             evaluator: Reused Evaluator instance (MAP@3 computation)
+            wandb_run: Optional active W&B run for logging
         """
         self.config    = config
         self.evaluator = evaluator
-        self.logger    = logging.getLogger(self.__class__.__name__)
+        self.wandb_run = wandb_run
+        self._logger   = logging.getLogger(self.__class__.__name__)
 
-        self.model:     Optional[Any]     = None
-        self.tokenizer: Optional[Any]     = None
-        self.trainer:   Optional[Any]     = None   # transformers.Trainer
+        self.model:     Optional[Any] = None
+        self.tokenizer: Optional[Any] = None
+        self.trainer:   Optional[Any] = None  # transformers.Trainer
 
         # Reverse label map: 0-based index → option letter (e.g. 0 → 'A')
         self._label_decoder: Dict[int, str] = {
             i: opt for i, opt in enumerate(config.options)
         }
 
-    # ── Model loading ──────────────────────────────────────────────
+    # ── model loading ─────────────────────────────────────────────────────────
 
-    def _load_base_model(self, model_name: str) -> Any:
+    def _load_base_model(self, model_name: Optional[str] = None) -> Any:
         """
         Load the base AutoModelForMultipleChoice with memory optimisations.
 
@@ -546,25 +747,28 @@ class MCQFineTuner:
         """
         from transformers import AutoModelForMultipleChoice
 
-        self.logger.info(f"Loading base model: {model_name}")
+        model_name = model_name or self.config.finetune_model
+        self._logger.info(f"Loading base model: {model_name}")
 
         model = AutoModelForMultipleChoice.from_pretrained(
             model_name,
             torch_dtype=(
-                torch.float16 if self.config.fp16 else torch.float32
+                torch.float16
+                if getattr(self.config, "fp16", False)
+                else torch.float32
             ),
             ignore_mismatched_sizes=True,
         )
 
-        if self.config.gradient_checkpointing:
+        if getattr(self.config, "gradient_checkpointing", False):
             model.gradient_checkpointing_enable()
-            model.config.use_cache = False   # incompatible with GC
+            model.config.use_cache = False  # incompatible with GC
 
         return model
 
-    # ── LoRA wrapping ──────────────────────────────────────────────
+    # ── LoRA wrapping ─────────────────────────────────────────────────────────
 
-    def _apply_lora(self, model: Any, model_name: str) -> Any:
+    def _apply_lora(self, model: Any, model_name: Optional[str] = None) -> Any:
         """
         Wrap *model* with LoRA adapters.
 
@@ -572,7 +776,16 @@ class MCQFineTuner:
         RoBERTa, and BERT are all handled without code changes.
         Falls back to config.lora_target_modules when unknown.
         """
-        from peft import LoraConfig, TaskType, get_peft_model
+        try:
+            from peft import LoraConfig, TaskType, get_peft_model
+        except ImportError:
+            self._logger.warning(
+                "peft not installed — training without LoRA. "
+                "Install with:  pip install peft"
+            )
+            return model
+
+        model_name = model_name or self.config.finetune_model
 
         arch = next(
             (k for k in self._LORA_TARGETS if k in model_name.lower()),
@@ -581,14 +794,16 @@ class MCQFineTuner:
         target_modules = (
             self._LORA_TARGETS[arch]
             if arch
-            else self.config.lora_target_modules
+            else getattr(
+                self.config, "lora_target_modules", ["query", "value"]
+            )
         )
 
         lora_cfg = LoraConfig(
             task_type=TaskType.SEQ_CLS,
-            r=self.config.lora_r,
-            lora_alpha=self.config.lora_alpha,
-            lora_dropout=self.config.lora_dropout,
+            r=getattr(self.config, "lora_r", 16),
+            lora_alpha=getattr(self.config, "lora_alpha", 32),
+            lora_dropout=getattr(self.config, "lora_dropout", 0.1),
             target_modules=target_modules,
             bias="none",
             inference_mode=False,
@@ -598,7 +813,7 @@ class MCQFineTuner:
         model.print_trainable_parameters()
         return model
 
-    # ── Metric computation (called by Trainer) ─────────────────────
+    # ── metric computation (called by Trainer) ────────────────────────────────
 
     def _compute_metrics(self, eval_pred) -> Dict[str, float]:
         """
@@ -606,9 +821,6 @@ class MCQFineTuner:
 
         eval_pred.predictions : (n_samples, n_options) logits
         eval_pred.label_ids   : (n_samples,) 0-based int labels
-
-        Delegates to the shared Evaluator so there is no metric
-        duplication between rankers.
         """
         logits, labels = eval_pred
         n_options      = logits.shape[1]
@@ -628,7 +840,7 @@ class MCQFineTuner:
 
         return {"map@3": map_score, "accuracy": accuracy}
 
-    # ── TrainingArguments ──────────────────────────────────────────
+    # ── TrainingArguments ─────────────────────────────────────────────────────
 
     def _build_training_args(self, output_dir: Path) -> Any:
         """
@@ -641,16 +853,29 @@ class MCQFineTuner:
         """
         from transformers import TrainingArguments
 
+        # Prefer config.log_dir; fall back to output_dir / "logs"
+        log_dir = getattr(
+            self.config,
+            "log_dir",
+            self.config.output_dir / "logs",
+        )
+
         return TrainingArguments(
             output_dir=str(output_dir),
-            num_train_epochs=self.config.num_epochs,
-            per_device_train_batch_size=self.config.train_batch_size,
-            per_device_eval_batch_size=self.config.eval_batch_size,
-            gradient_accumulation_steps=self.config.gradient_accumulation_steps,
-            learning_rate=self.config.learning_rate,
-            weight_decay=self.config.weight_decay,
-            warmup_ratio=self.config.warmup_ratio,
-            fp16=self.config.fp16,
+            num_train_epochs=getattr(self.config, "num_epochs", 3),
+            per_device_train_batch_size=getattr(
+                self.config, "train_batch_size", 4
+            ),
+            per_device_eval_batch_size=getattr(
+                self.config, "eval_batch_size", 8
+            ),
+            gradient_accumulation_steps=getattr(
+                self.config, "gradient_accumulation_steps", 4
+            ),
+            learning_rate=getattr(self.config, "learning_rate", 2e-5),
+            weight_decay=getattr(self.config, "weight_decay", 0.01),
+            warmup_ratio=getattr(self.config, "warmup_ratio", 0.1),
+            fp16=getattr(self.config, "fp16", False),
             evaluation_strategy="steps",
             eval_steps=50,
             save_strategy="steps",
@@ -658,25 +883,27 @@ class MCQFineTuner:
             load_best_model_at_end=True,
             metric_for_best_model="map@3",
             greater_is_better=True,
-            logging_dir=str(self.config.log_dir),
+            logging_dir=str(log_dir),
             logging_steps=10,
-            report_to=[],                    # W&B managed externally
-            dataloader_num_workers=self.config.num_workers,
-            dataloader_pin_memory=self.config.pin_memory,
-            remove_unused_columns=False,     # CRITICAL for custom collation
+            report_to=[],               # W&B managed externally
+            dataloader_num_workers=getattr(self.config, "num_workers", 0),
+            dataloader_pin_memory=getattr(self.config, "pin_memory", False),
+            remove_unused_columns=False,  # CRITICAL for custom collation
             save_total_limit=2,
-            group_by_length=True,            # dynamic batching by length
-            seed=self.config.seed,
+            group_by_length=True,         # dynamic batching by length
+            seed=getattr(self.config, "seed", 42),
         )
 
-    # ── Public API ─────────────────────────────────────────────────
+    # ── public API ────────────────────────────────────────────────────────────
 
     def train(
         self,
         train_dataset,
         val_dataset,
-        data_collator,
+        data_collator: DataCollatorForMultipleChoice,
+        tokenizer,
         model_name: Optional[str] = None,
+        use_lora:   bool          = True,
     ) -> "MCQFineTuner":
         """
         Full training pipeline.
@@ -685,25 +912,26 @@ class MCQFineTuner:
             train_dataset : HF Dataset with integer 'label' column
             val_dataset   : HF Dataset with integer 'label' column
             data_collator : DataCollatorForMultipleChoice instance
+            tokenizer     : HF tokenizer matching the base model
             model_name    : Override config.finetune_model if needed
+            use_lora      : Apply LoRA adapters (default True)
 
         Returns:
             self  (supports method chaining)
         """
-        from transformers import AutoTokenizer, EarlyStoppingCallback, Trainer
+        from transformers import EarlyStoppingCallback, Trainer
 
-        model_name = model_name or self.config.finetune_model
+        model_name     = model_name or self.config.finetune_model
+        self.tokenizer = tokenizer
 
-        # Tokenizer (also needed by Trainer for internal padding logic)
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, use_fast=True
-        )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # Build model with LoRA adapters
+        # Build model with optional LoRA adapters
         base_model = self._load_base_model(model_name)
-        self.model  = self._apply_lora(base_model, model_name)
+        self.model = (
+            self._apply_lora(base_model, model_name) if use_lora else base_model
+        )
         self.model.to(self.config.device)
 
         # Checkpoint directory: one folder per model to avoid collisions
@@ -724,16 +952,20 @@ class MCQFineTuner:
             callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
         )
 
-        self.logger.info("Starting LoRA fine-tuning …")
+        self._logger.info("Starting LoRA fine-tuning …")
         result = self.trainer.train()
-        self.logger.info(f"Training complete: {result.metrics}")
+        self._logger.info(f"Training complete: {result.metrics}")
+
+        if self.wandb_run is not None:
+            self.wandb_run.log(result.metrics)
+
         return self
 
     @torch.no_grad()
     def predict(
         self,
         dataset,
-        data_collator,
+        data_collator: DataCollatorForMultipleChoice,
     ) -> np.ndarray:
         """
         Generate logits from the fine-tuned model.
@@ -750,7 +982,7 @@ class MCQFineTuner:
                 "Call train() (or load_model()) before predict()."
             )
         output = self.trainer.predict(dataset)
-        return output.predictions   # (n_samples, n_options)
+        return output.predictions  # (n_samples, n_options)
 
     def save_model(self, path: Optional[Path] = None) -> Path:
         """
@@ -765,14 +997,14 @@ class MCQFineTuner:
         save_path = path or self.config.model_dir / "best-mcq-model"
         save_path.mkdir(parents=True, exist_ok=True)
         self.model.save_pretrained(str(save_path))
-        if self.tokenizer:
+        if self.tokenizer is not None:
             self.tokenizer.save_pretrained(str(save_path))
-        self.logger.info(f"Model saved → {save_path}")
+        self._logger.info(f"Model saved → {save_path}")
         return save_path
 
     def load_model(
         self,
-        path: Path,
+        path:       Path,
         model_name: Optional[str] = None,
     ) -> "MCQFineTuner":
         """
@@ -796,7 +1028,7 @@ class MCQFineTuner:
         self.model.eval()
 
         self.tokenizer = AutoTokenizer.from_pretrained(str(path))
-        self.logger.info(f"Model loaded ← {path}")
+        self._logger.info(f"Model loaded ← {path}")
         return self
 
     def log_metrics(
@@ -804,7 +1036,7 @@ class MCQFineTuner:
         logits:      np.ndarray,
         df:          pd.DataFrame,
         option_cols: List[str],
-        split:       str = "val",
+        split:       str           = "val",
         wandb_run=None,
     ) -> dict:
         """
@@ -825,7 +1057,7 @@ class MCQFineTuner:
         """
         metrics    = _compute_metrics(logits, df, option_cols)
         tagged     = {f"finetune_{split}/{k}": v for k, v in metrics.items()}
-        active_run = wandb_run
+        active_run = wandb_run or self.wandb_run
         if active_run is not None:
             active_run.log(tagged)
         return tagged
@@ -839,4 +1071,4 @@ class MCQFineTuner:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        self.logger.info("MCQFineTuner: GPU memory released.")
+        self._logger.info("MCQFineTuner: GPU memory released.")
