@@ -12,7 +12,7 @@ from transformers import AutoTokenizer
 
 from config.config import Config
 from src.data.dataset import DataCollatorForMultipleChoice, MCQDatasetBuilder
-from src.evaluation.evaluator import Evaluator
+from src.evaluation.evaluator import MAPAtKEvaluator as Evaluator
 from src.ensemble.fuser import Fuser
 from src.models.transformer_ranker import MCQFineTuner
 
