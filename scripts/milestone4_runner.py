@@ -12,8 +12,8 @@ import pandas as pd
 from config.config import Config
 from src.data.data_loader import DataLoader as MCQDataLoader
 from src.preprocessing import preprocessing as Preprocessor
-from src.pipelines.training_pipeline import TrainingPipeline
-from src.pipelines.inference_pipeline import InferencePipeline
+from src.pipeline.training_pipeline import TrainingPipeline
+from src.pipeline.inference_pipeline import InferencePipeline
 from src.utils.submission import SubmissionGenerator
 from src.ensemble.fuser import Fuser
 from src.evaluation.evaluator import Evaluator
