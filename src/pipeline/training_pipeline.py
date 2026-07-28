@@ -13,12 +13,12 @@ from transformers import AutoTokenizer
 from config.config import Config
 from src.data.dataset import DataCollatorForMultipleChoice, MCQDatasetBuilder
 from src.evaluation.evaluator import MAPAtKEvaluator as Evaluator
-from src.ensemble.fuser import Fuser
+from src.ensemble.fuser import ScoreFuser as Fuser
 from src.models.transformer_ranker import MCQFineTuner
 
 # Existing Milestone 3 imports (kept as-is)
 from src.models.tfidf_ranker import TFIDFRanker
-from src.models.w2v_ranker import W2VRanker
+from src.models.w2v_ranker import Word2VecRanker
 from src.models.sbert_ranker import SBERTRanker
 
 logger = logging.getLogger(__name__)

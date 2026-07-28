@@ -10,10 +10,10 @@ from transformers import AutoTokenizer
 
 from config.config import Config
 from src.data.dataset import DataCollatorForMultipleChoice, MCQDatasetBuilder
-from src.ensemble.fuser import Fuser
+from src.ensemble.fuser import ScoreFuser as Fuser
 from src.evaluation.evaluator import MAPAtKEvaluator as Evaluator
 from src.models.transformer_ranker import MCQFineTuner
-from src.utils.submission import SubmissionGenerator
+from utils.submission import SubmissionGenerator
 
 logger = logging.getLogger(__name__)
 
