@@ -128,19 +128,19 @@ def _build_datasets(
 # Single-model training + prediction
 # ─────────────────────────────────────────────────────────────────────────────
 
-
 def _train_and_predict(
     cfg,
-    evaluator: Evaluator,
-    model_name: str,
-    train_ds: Dataset,
-    val_ds: Dataset,
-    test_ds: Dataset,
-    collator: DataCollatorForMultipleChoice,
-    tokenizer: AutoTokenizer,
-    model_key: str,
-    use_lora: bool = True,
-) -> Tuple[np.ndarray, np.ndarray]:
+    evaluator,
+    model_name,
+    train_ds,
+    val_ds,
+    test_ds,
+    val_df,
+    collator,
+    tokenizer,
+    model_key,
+    use_lora=True,
+)-> Tuple[np.ndarray, np.ndarray]:
     """
     Fine-tune one model and return (val_logits, test_logits).
 
@@ -158,11 +158,9 @@ def _train_and_predict(
     option_cols = cfg.options
 
     val_preds = evaluator.scores_to_top_k_predictions(val_logits, option_cols)
-    metrics   = evaluator.evaluate(
-        # evaluator.evaluate expects a DataFrame; pass val_df via closure
-        # → we log MAP@3 directly here instead
-        logits=val_logits,
-        option_cols=option_cols,
+    metrics = evaluator.evaluate(
+        df=val_df,
+        predictions=val_preds,
         split=f"{model_key}_val",
     )
     map3 = metrics.get(f"{model_key}_val/map@3", float("nan"))
@@ -208,7 +206,11 @@ def _run_comparison(
 
     for name, logits in logit_map.items():
         preds   = evaluator.scores_to_top_k_predictions(logits, option_cols)
-        metrics = evaluator.evaluate(val_df, preds, cfg, split=name)
+        metrics = evaluator.evaluate(
+            df=val_df,
+            predictions=preds,
+            split=name,
+        )
         map3    = metrics.get(f"{name}/map@3", 0.0)
         ablation[f"{name}/map@3"] = map3
         rows.append({"Model": name, "MAP@3": f"{map3:.4f}"})
@@ -330,16 +332,17 @@ def run_milestone4(
         _verify_batch(train_ds, collator)
 
         ft_val_logits, ft_test_logits = _train_and_predict(
-            cfg       = cfg,
-            evaluator = evaluator,
-            model_name= primary_model,
-            train_ds  = train_ds,
-            val_ds    = val_ds,
-            test_ds   = test_ds,
-            collator  = collator,
-            tokenizer = primary_tok,
-            model_key = "ft",
-            use_lora  = use_lora,
+            cfg=cfg,
+            evaluator=evaluator,
+            model_name=primary_model,
+            train_ds=train_ds,
+            val_ds=val_ds,
+            test_ds=test_ds,
+            val_df=val_df,
+            collator=collator,
+            tokenizer=primary_tok,
+            model_key="ft",
+            use_lora=use_lora,
         )
 
         # ── Secondary model (RoBERTa) ─────────────────────────────────────────
@@ -433,16 +436,17 @@ def _train_secondary(
         )
 
         val_logits, test_logits = _train_and_predict(
-            cfg       = cfg,
-            evaluator = evaluator,
-            model_name= model_name,
-            train_ds  = train_ds,
-            val_ds    = val_ds,
-            test_ds   = test_ds,
-            collator  = collator,
-            tokenizer = sec_tok,
-            model_key = "roberta",
-            use_lora  = use_lora,
+            cfg=cfg,
+            evaluator=evaluator,
+            model_name=model_name,
+            train_ds=train_ds,
+            val_ds=val_ds,
+            test_ds=test_ds,
+            val_df=val_df,
+            collator=collator,
+            tokenizer=sec_tok,
+            model_key="roberta",
+            use_lora=use_lora,
         )
     except Exception as exc:
         logger.error(
