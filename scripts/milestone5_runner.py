@@ -508,10 +508,14 @@ def run_milestone5(
     )
 
     # ── 5. Persist ensemble score matrices ────────────────────────────────
-    out.mkdir(parents=True, exist_ok=True)
-    np.save(out / "ensemble_val.npy",  best_val)
-    np.save(out / "ensemble_test.npy", best_test)
-    logger.info(f"[ensemble] Scores saved → {out}")
+    artifact_dir = Path(
+        getattr(cfg, "ARTIFACTS_SAVE_DIR", getattr(cfg, "output_dir"))
+    )
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    np.save(artifact_dir / "ensemble_val.npy", best_val)
+    np.save(artifact_dir / "ensemble_test.npy", best_test)
+    logger.info(f"[ensemble] Scores saved → {artifact_dir}")
 
     # ── 6. Final console summary ──────────────────────────────────────────
     summary_rows = [
