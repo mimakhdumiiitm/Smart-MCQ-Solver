@@ -132,12 +132,51 @@ def _load_all_scores(
         search_dirs = [out]
 
     candidates = {
-        "tfidf"       : ("tfidf_val.npy",       "tfidf_test.npy"),
-        "w2v"         : ("w2v_val.npy",          "w2v_test.npy"),
-        "sbert"       : ("sbert_val.npy",        "sbert_test.npy"),
-        "rag_combined": ("rag_combined_val.npy", "rag_combined_test.npy"),
-    }
+        "tfidf": (
+            "tfidf_val_scores.npy",
+            "tfidf_test_scores.npy",
+        ),
+        "w2v": (
+            "w2v_val_scores.npy",
+            "w2v_test_scores.npy",
+        ),
+        "sbert": (
+            "sbert_val_scores.npy",
+            "sbert_test_scores.npy",
+        ),
 
+        # Choose ONE of these depending on the RAG output you want
+
+        "rag_semantic": (
+            "rag_semantic_val.npy",
+            "rag_semantic_test.npy",
+        ),
+
+        # OR
+
+        # "rag_vote": (
+        #     "rag_vote_val.npy",
+        #     "rag_vote_test.npy",
+        # ),
+
+        # Optional additional models
+        "transformer": (
+            "transformer_val_scores.npy",
+            "transformer_test_scores.npy",
+        ),
+        "zeroshot": (
+            "zs_val_scores.npy",
+            "zs_test_scores.npy",
+        ),
+        "deberta_ft": (
+            "ft_val_logits.npy",
+            "ft_test_logits.npy",
+        ),
+        "roberta_ft": (
+            "roberta_val_logits.npy",
+            "roberta_test_logits.npy",
+        ),
+    }
     val_scores:  Dict[str, np.ndarray] = {}
     test_scores: Dict[str, np.ndarray] = {}
 
