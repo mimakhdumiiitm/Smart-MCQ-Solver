@@ -25,7 +25,7 @@ The following preprocessing and exploratory steps were completed:
 
 ## 1. Answer Distribution
 
-![Answer Distribution](../outputs/answer_distribution.png)
+![Answer Distribution](../outputs/plots/answer_distribution.png)
 
 **Observation**
 
@@ -37,7 +37,7 @@ The following preprocessing and exploratory steps were completed:
 
 ## 2. Inter-Option Similarity Heatmap
 
-![Inter Option Heatmap](../outputs/inter_option_heatmap.png)
+*No matching plot image was generated in the latest outputs/plots directory for this section.*
 
 **Observation**
 
@@ -49,7 +49,7 @@ The following preprocessing and exploratory steps were completed:
 
 ## 3. MAP@3 Comparison
 
-![MAP Comparison](../outputs/map_comparison.png)
+![MAP Comparison](../outputs/plots/map_comparison.png)
 
 **Observation**
 
@@ -61,7 +61,7 @@ The following preprocessing and exploratory steps were completed:
 
 ## 4. Mean TF-IDF Similarity per Option
 
-![Mean TF-IDF Similarity](../outputs/mean_sim_per_option.png)
+*No matching plot image was generated in the latest outputs/plots directory for this section.*
 
 **Observation**
 
@@ -73,7 +73,7 @@ The following preprocessing and exploratory steps were completed:
 
 ## 5. Mean Word2Vec Similarity per Option
 
-![Mean Word2Vec Similarity](../outputs/mean_sim_per_option_w2v.png)
+*No matching plot image was generated in the latest outputs/plots directory for this section.*
 
 **Observation**
 
@@ -85,7 +85,7 @@ The following preprocessing and exploratory steps were completed:
 
 ## 6. Rank Distribution
 
-![Rank Distribution](../outputs/rank_distribution.png)
+![Rank Distribution](../outputs/plots/rank_distribution.png)
 
 **Observation**
 
@@ -97,7 +97,7 @@ The following preprocessing and exploratory steps were completed:
 
 ## 7. Text Length Distribution
 
-![Text Length Distribution](../outputs/text_length_distributions.png)
+![Text Length Distribution](../outputs/plots/text_length_distributions.png)
 
 **Observation**
 
@@ -109,7 +109,7 @@ The following preprocessing and exploratory steps were completed:
 
 ## 8. Most Frequent Prompt Words
 
-![Top Prompt Words](../outputs/top_prompt_words.png)
+![Top Prompt Words](../outputs/plots/top_prompt_words.png)
 
 **Observation**
 
@@ -129,7 +129,7 @@ The following preprocessing and exploratory steps were completed:
 
 ## 9. Most Frequent Option Words
 
-![Top Option Words](../outputs/top_option_words.png)
+*No matching plot image was generated in the latest outputs/plots directory for this section.*
 
 **Observation**
 
@@ -150,7 +150,7 @@ The following preprocessing and exploratory steps were completed:
 
 ## 10. Word2Vec PCA Visualization
 
-![Word2Vec PCA](../outputs/w2v_pca.png)
+![Word2Vec PCA](../outputs/plots/w2v_pca.png)
 
 **Observation**
 
@@ -162,7 +162,7 @@ The following preprocessing and exploratory steps were completed:
 
 ## 11. TF-IDF Similarity Distribution
 
-![TF-IDF Similarity Distribution](../outputs/sim_dist_tfidf.png)
+![TF-IDF Similarity Distribution](../outputs/plots/tfidf_similarity_dist.png)
 
 **Observation**
 
@@ -174,7 +174,7 @@ The following preprocessing and exploratory steps were completed:
 
 ## 12. Word2Vec Similarity Distribution
 
-![Word2Vec Similarity Distribution](../outputs/sim_dist_w2v.png)
+![Word2Vec Similarity Distribution](../outputs/plots/sbert_similarity_dist.png)
 
 **Observation**
 

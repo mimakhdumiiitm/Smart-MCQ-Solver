@@ -1,14 +1,7 @@
-# Smart MCQ Solver - Requirements
-pandas
-numpy
-scikit-learn
-nltk
-transformers
-sentence-transformers
-datasets
-gensim
-wordcloud
-matplotlib
-seaborn
-tqdm
-wandb
+transformers 
+sentence-transformers 
+wandb 
+faiss-cpu
+datasets 
+peft 
+accelerate 
