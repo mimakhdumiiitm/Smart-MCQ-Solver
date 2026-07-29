@@ -254,18 +254,12 @@ class Config:
 
     @property
     def tfidf_model_path(self) -> Path:
-        return self._resolve_model_path(
-            PREBUILT_TFIDF_MODEL_PATH,
-            "tfidf_vectorizer.pkl",
-        )
+        return Path(PREBUILT_TFIDF_MODEL_PATH)
 
     @property
     def w2v_model_path(self) -> Path:
-        return self._resolve_model_path(
-            PREBUILT_W2V_MODEL_PATH,
-            "word2vec.model",
-        )
-
+        return Path(PREBUILT_W2V_MODEL_PATH)
+    
     # ── Milestone 4 convenience helpers ───────────────────────────
     @property
     def finetuned_model_path(self) -> Path:

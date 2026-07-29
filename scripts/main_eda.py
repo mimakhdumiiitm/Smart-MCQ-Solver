@@ -49,41 +49,43 @@ def _npy_path(cfg: Config, name: str) -> Path:
 
 
 def _try_load_scores(
-    cfg      : Config,
-    val_name : str,
+    cfg: Config,
+    val_name: str,
     test_name: str,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """
-    Return (val_scores, test_scores) from disk when both files exist,
-    otherwise return (None, None) so the caller re-computes them.
-    """
-    val_path  = _npy_path(cfg, val_name)
-    test_path = _npy_path(cfg, test_name)
+    """Load cached score arrays from the Kaggle artifacts directory."""
+    val_path = Path(cfg.kaggle_artifacts_dir) / val_name
+    test_path = Path(cfg.kaggle_artifacts_dir) / test_name
 
     if val_path.exists() and test_path.exists():
-        val_scores  = np.load(str(val_path))
-        test_scores = np.load(str(test_path))
         logger.info(f"Reusing cached score arrays: {val_name}, {test_name}")
-        return val_scores, test_scores
+        return np.load(val_path), np.load(test_path)
 
     logger.info(
-        f"Score cache not found ({val_name} / {test_name}) — will compute."
+        f"Score cache not found ({val_name}, {test_name}) in "
+        f"{cfg.kaggle_artifacts_dir}"
     )
     return None, None
 
 
 def _save_scores(
-    cfg       : Config,
+    cfg: Config,
     val_scores: np.ndarray,
     test_scores: np.ndarray,
-    val_name  : str,
-    test_name : str,
+    val_name: str,
+    test_name: str,
 ) -> None:
-    """Persist val+test score arrays to cfg.kaggle_artifacts_dir."""
-    Path(cfg.kaggle_artifacts_dir).mkdir(parents=True, exist_ok=True)
-    np.save(str(_npy_path(cfg, val_name)),  val_scores)
-    np.save(str(_npy_path(cfg, test_name)), test_scores)
-    logger.info(f"Saved score artifacts: {val_name}, {test_name}")
+    """Save score arrays into the writable output directory."""
+    output_dir = Path(cfg.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    np.save(output_dir / val_name, val_scores)
+    np.save(output_dir / test_name, test_scores)
+
+    logger.info(
+        f"Saved score artifacts to {output_dir}: "
+        f"{val_name}, {test_name}"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════
