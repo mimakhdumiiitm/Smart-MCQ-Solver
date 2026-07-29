@@ -14,10 +14,6 @@ from src.rag.rag_pipeline import RAGPipeline
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Utility
-# ─────────────────────────────────────────────────────────────────────────────
-
 #: Names of the four RAG score artefacts produced / consumed by M3.
 _RAG_ARTEFACT_NAMES: List[str] = [
     "rag_vote_val.npy",
@@ -27,38 +23,72 @@ _RAG_ARTEFACT_NAMES: List[str] = [
 ]
 
 
-def _try_load_from_dir(directory: Optional[Path]) -> Optional[Dict[str, np.ndarray]]:
+# ─────────────────────────────────────────────────────────────────────────────
+# Artifact helpers  (thin wrappers around cfg.artifact_* methods)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _all_rag_artifacts_exist(cfg) -> bool:
     """
-    Attempt to load all four RAG .npy artefacts from *directory*.
+    True when every RAG artefact is available from either
+    cfg.artifacts_load_dir (pre-built Kaggle input) or
+    cfg.artifacts_save_dir (locally saved).
+    """
+    return all(cfg.artifact_exists(name) for name in _RAG_ARTEFACT_NAMES)
+
+
+def _load_rag_artifacts(cfg) -> Optional[Dict[str, np.ndarray]]:
+    """
+    Load all four RAG .npy artefacts via cfg.load_artifact().
+
+    Search order per file (handled inside Config)
+    ─────────────────────────────────────────────
+    1. cfg.artifacts_load_dir / name  (pre-built Kaggle input artifact)
+    2. cfg.artifacts_save_dir / name  (locally saved artifact)
 
     Returns
     -------
-    dict  – keyed by stem name (without extension) if ALL four files exist.
-    None  – if the directory is None / missing or any file is absent.
+    dict  – keyed by stem name (without extension) if ALL four files load OK.
+    None  – if any file is missing or fails to load.
     """
-    if directory is None:
-        return None
-
-    directory = Path(directory)
-    if not directory.exists():
-        logger.debug(f"[artefact] Directory not found: {directory}")
+    if not _all_rag_artifacts_exist(cfg):
         return None
 
     loaded: Dict[str, np.ndarray] = {}
     for name in _RAG_ARTEFACT_NAMES:
-        p = directory / name
-        if not p.exists():
-            logger.debug(f"[artefact] Missing in {directory}: {name}")
+        try:
+            loaded[name.replace(".npy", "")] = cfg.load_artifact(name)
+        except Exception as exc:
+            logger.warning(
+                f"[artefact] Found {name} but failed to load: {exc}"
+            )
             return None          # all-or-nothing
-        loaded[name.replace(".npy", "")] = np.load(p)
-        logger.info(f"[artefact] Loaded {name} from {directory}")
 
     return loaded
 
 
-def _all_rag_cached(directory: Path) -> bool:
-    """True when every artefact file exists inside *directory*."""
-    return all((directory / n).exists() for n in _RAG_ARTEFACT_NAMES)
+def _save_rag_artifacts(
+    cfg,
+    rag_vote_val     : np.ndarray,
+    rag_vote_test    : np.ndarray,
+    rag_semantic_val : np.ndarray,
+    rag_semantic_test: np.ndarray,
+) -> None:
+    """
+    Save all four RAG score arrays via cfg.save_artifact()
+    (always writes to cfg.artifacts_save_dir).
+    """
+    payload = {
+        "rag_vote_val.npy"     : rag_vote_val,
+        "rag_vote_test.npy"    : rag_vote_test,
+        "rag_semantic_val.npy" : rag_semantic_val,
+        "rag_semantic_test.npy": rag_semantic_test,
+    }
+    for name, array in payload.items():
+        cfg.save_artifact(array, name)
+
+    logger.info(
+        f"[M3] RAG artefacts saved → {cfg.artifacts_save_dir}"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -66,21 +96,21 @@ def _all_rag_cached(directory: Path) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_milestone3(
-    train_df: pd.DataFrame,
-    val_df: pd.DataFrame,
-    test_df: pd.DataFrame,
+    train_df       : pd.DataFrame,
+    val_df         : pd.DataFrame,
+    test_df        : pd.DataFrame,
     retrieval_model: str = "all-mpnet-base-v2",
-    top_k: int = 5,
+    top_k          : int = 5,
 ) -> Dict[str, Any]:
     """
     Execute the full Milestone 3 RAG pipeline.
 
     Artefact loading priority
-    -------------------------
-    1. ``cfg.kaggle_artifacts_dir``  – pre-computed artefacts from a previous
-                                       Kaggle notebook run (read-only mount).
-    2. ``cfg.output_dir``            – artefacts saved by a previous local run.
-    3. Compute from scratch and save to ``cfg.output_dir``.
+    ─────────────────────────
+    1. cfg.artifacts_load_dir  – pre-computed artefacts from a previous
+                                 Kaggle notebook run (read-only mount).
+    2. cfg.artifacts_save_dir  – artefacts saved by a previous local run.
+    3. Compute from scratch and save to cfg.artifacts_save_dir.
 
     Parameters
     ----------
@@ -106,35 +136,26 @@ def run_milestone3(
     evaluator = _Evaluator()
 
     option_cols = cfg.options
-    out         = cfg.output_dir
     results: Dict[str, Any] = {"metrics": {}}
 
-    # ── Step 1: Resolve artefact source ──────────────────────────────────────
-    #
-    #   Priority:
-    #     (a) Kaggle read-only mount   → cfg.kaggle_artifacts_dir
-    #     (b) Local output dir cache   → cfg.output_dir
-    #     (c) Compute from scratch
-    #
-    artefacts: Optional[Dict[str, np.ndarray]] = None
-    artefact_source: str = "compute"
+    logger.info(
+        f"[M3] artifacts_load_dir : {cfg.artifacts_load_dir} "
+        f"(exists={cfg.artifacts_load_dir.exists()})"
+    )
+    logger.info(f"[M3] artifacts_save_dir : {cfg.artifacts_save_dir}")
 
-    # (a) Check Kaggle artifacts directory (configured, not hardcoded here)
-    kaggle_dir: Optional[Path] = getattr(cfg, "kaggle_artifacts_dir", None)
-    if kaggle_dir is not None:
-        artefacts = _try_load_from_dir(kaggle_dir)
-        if artefacts is not None:
-            artefact_source = f"kaggle_artifacts ({kaggle_dir})"
-
-    # (b) Fall back to local output-dir cache
-    if artefacts is None and _all_rag_cached(out):
-        artefacts = _try_load_from_dir(out)
-        if artefacts is not None:
-            artefact_source = f"local_cache ({out})"
+    # ── Step 1: Try to load cached artefacts ─────────────────────────────────
+    #
+    #   Config.load_artifact() checks artifacts_load_dir first (pre-built
+    #   Kaggle input), then falls back to artifacts_save_dir (local cache).
+    #   _load_rag_artifacts() wraps this with an all-or-nothing guard so we
+    #   never use a partial set of stale score arrays.
+    #
+    artefacts: Optional[Dict[str, np.ndarray]] = _load_rag_artifacts(cfg)
 
     # ── Step 2: Use cached artefacts OR compute ───────────────────────────────
     if artefacts is not None:
-        logger.info(f"[M3] Reusing RAG artefacts from → {artefact_source}")
+        logger.info("[M3] Reusing RAG artefacts from artifact directories.")
 
         rag_vote_val      = artefacts["rag_vote_val"]
         rag_vote_test     = artefacts["rag_vote_test"]
@@ -156,13 +177,14 @@ def run_milestone3(
         rag_semantic_val  = rag.compute_semantic_context_scores(val_df)
         rag_semantic_test = rag.compute_semantic_context_scores(test_df)
 
-        # ── Persist to local output dir ───────────────────────────────────
-        out.mkdir(parents=True, exist_ok=True)
-        np.save(out / "rag_vote_val.npy",      rag_vote_val)
-        np.save(out / "rag_vote_test.npy",     rag_vote_test)
-        np.save(out / "rag_semantic_val.npy",  rag_semantic_val)
-        np.save(out / "rag_semantic_test.npy", rag_semantic_test)
-        logger.info(f"[M3] RAG artefacts saved → {out}")
+        # ── Persist to artifacts_save_dir ─────────────────────────────────
+        _save_rag_artifacts(
+            cfg,
+            rag_vote_val,
+            rag_vote_test,
+            rag_semantic_val,
+            rag_semantic_test,
+        )
 
         # Context strings are cheap to compute; store them now.
         results["val_contexts"]   = rag.get_retrieval_context(val_df)
@@ -188,7 +210,7 @@ def run_milestone3(
     if "val_contexts" not in results:
         logger.info(
             "[M3] Generating retrieval context strings "
-            "(artefacts were cached, rebuilding index for context only) …"
+            "(artefacts were cached – rebuilding index for context only) …"
         )
         rag = RAGPipeline(
             cfg,
@@ -221,13 +243,13 @@ def run_milestone3(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _run_ablation(
-    val_df:      pd.DataFrame,
-    vote_scores: np.ndarray,
-    sem_scores:  np.ndarray,
-    combined:    np.ndarray,
+    val_df      : pd.DataFrame,
+    vote_scores : np.ndarray,
+    sem_scores  : np.ndarray,
+    combined    : np.ndarray,
     evaluator,
     cfg,
-    option_cols: List[str],
+    option_cols : List[str],
 ) -> Dict[str, float]:
     """
     Compare three RAG scoring variants on the validation set.

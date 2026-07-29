@@ -28,68 +28,12 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Priority artifact directory – checked FIRST before any other path
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Ordered list of artifact roots to probe (highest priority first).
-_ARTIFACT_ROOTS: List[Path] = [
-    Path("/kaggle/input/notebooks/mimakhdumiiitm"
-         "/dl-22f3001418-notebook-t22026/outputs"),
-    Path("/kaggle/input/project-artifacts/outputs"),
-]
-
-
-def _resolve_artifact_root() -> Optional[Path]:
-    """
-    Return the first existing artifact root from ``_ARTIFACT_ROOTS``,
-    or ``None`` when none of them exist on this machine.
-    """
-    for root in _ARTIFACT_ROOTS:
-        if root.exists():
-            logger.info(f"[artifact] Using artifact root: {root}")
-            return root
-    logger.info("[artifact] No pre-existing artifact root found – will run from scratch.")
-    return None
-
-
-# Resolve once at import time so every helper can reuse it cheaply.
-_ARTIFACT_ROOT: Optional[Path] = _resolve_artifact_root()
-
-
-def _artifact_path(filename: str) -> Optional[Path]:
-    """
-    Return ``<artifact_root>/<filename>`` when it exists, else ``None``.
-    Searches ALL roots in priority order so a file missing from root-1 can
-    still be found in root-2.
-    """
-    for root in _ARTIFACT_ROOTS:
-        candidate = root / filename
-        if candidate.exists():
-            logger.debug(f"[artifact] Found {filename} at {candidate}")
-            return candidate
-    return None
-
-
-def _artifact_subpath(subdir: str, filename: str) -> Optional[Path]:
-    """
-    Like ``_artifact_path`` but looks inside ``<root>/<subdir>/<filename>``.
-    Useful for processed_files sub-folder.
-    """
-    for root in _ARTIFACT_ROOTS:
-        candidate = root / subdir / filename
-        if candidate.exists():
-            logger.debug(f"[artifact] Found {subdir}/{filename} at {candidate}")
-            return candidate
-    return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # W&B helpers  (delegate to utils/wandb_init.py where possible)
 # ─────────────────────────────────────────────────────────────────────────────
 
 try:
     from utils.wandb_init import (
-        authenticate,           # safe, non-interactive auth helper
+        authenticate,
         init_wandb,
         log_model_metrics,
         finish_run,
@@ -125,26 +69,22 @@ def _do_wandb_auth(api_key: Optional[str] = None) -> None:
     ``WANDB_MODE=disabled`` environment variable so that no interactive
     prompt is ever shown.
     """
-    # ── Resolve the key from all non-interactive sources ─────────────────────
     resolved_key: Optional[str] = (
         api_key
         or os.environ.get("WANDB_API_KEY")
     )
 
-    # Try Kaggle Secrets via utils/wandb_init.authenticate()
     if resolved_key is None and _WANDB_UTILS_AVAILABLE:
         try:
-            authenticate()          # writes key to env / netrc silently
+            authenticate()
             resolved_key = os.environ.get("WANDB_API_KEY")
         except Exception as exc:
             logger.debug(f"[W&B] authenticate() returned: {exc}")
 
-    # ── Attempt a silent login ────────────────────────────────────────────────
     try:
         import wandb
 
         if resolved_key:
-            # Force non-interactive login with the resolved key.
             wandb.login(
                 key       = resolved_key,
                 relogin   = True,
@@ -152,9 +92,6 @@ def _do_wandb_auth(api_key: Optional[str] = None) -> None:
             )
             logger.info("[W&B] Logged in with API key (non-interactive).")
         else:
-            # No key available – try to reuse an existing netrc entry.
-            # ``anonymous="never"`` + ``relogin=False`` means wandb will use
-            # whatever is already stored and raise (not prompt) if nothing is.
             wandb.login(
                 anonymous = "never",
                 relogin   = False,
@@ -162,8 +99,6 @@ def _do_wandb_auth(api_key: Optional[str] = None) -> None:
             logger.info("[W&B] Re-using existing W&B credentials.")
 
     except Exception as exc:
-        # Authentication failed and we have no key → disable W&B entirely
-        # so the rest of the pipeline runs without any interactive prompt.
         logger.warning(
             f"[W&B] Silent login failed ({exc}). "
             "Setting WANDB_MODE=disabled – metrics will not be uploaded."
@@ -185,13 +120,7 @@ def _wandb_init(
     """
     Start a W&B run. Auth must have been performed by ``_do_wandb_auth()``
     before this is called – this function never calls ``wandb.login()``.
-
-    Strategy
-    ────────
-    • model_tag in COMPARABLE_MODELS + utils available → ``init_wandb()``
-    • everything else                                  → inline wandb.init()
     """
-    # ── delegate path ────────────────────────────────────────────────────────
     if _WANDB_UTILS_AVAILABLE and cfg is not None and model_tag in COMPARABLE_MODELS:
         try:
             run = init_wandb(cfg, run_name=run_name, model_tag=model_tag)
@@ -203,15 +132,12 @@ def _wandb_init(
                 f"[W&B] init_wandb failed ({exc}). Trying inline fallback."
             )
 
-    # ── inline fallback ──────────────────────────────────────────────────────
     try:
         import wandb
         run = wandb.init(
             project = project,
             name    = run_name,
             config  = config_dict,
-            # Use 'finish_previous' to avoid the deprecated boolean reinit
-            # warning introduced in wandb ≥ 0.18.
             reinit  = "finish_previous",
         )
         logger.info(f"[W&B] Run started (inline) → {run.url}")
@@ -243,10 +169,7 @@ def _wandb_finish(run) -> None:
 
 
 def _wandb_log(run, metrics: dict) -> None:
-    """
-    Log metrics to a W&B run (delegates to utils when available).
-    Falls back to inline run.log otherwise.
-    """
+    """Log metrics to a W&B run (delegates to utils when available)."""
     if run is None:
         return
 
@@ -266,13 +189,9 @@ def _wandb_log(run, metrics: dict) -> None:
 def _build_required_metrics_payload(raw_metrics: dict) -> dict:
     """
     Map internal metric keys → canonical REQUIRED_METRICS names:
-
         map_at_3  → map_at_k
         f1_macro  → f1_score
-        (others passed through unchanged)
-
-    Also seeds any still-missing REQUIRED_METRICS keys with None so that
-    log_model_metrics never raises a missing-key warning.
+    Also seeds any still-missing REQUIRED_METRICS keys with None.
     """
     mapping = {
         "map_at_3": "map_at_k",
@@ -358,30 +277,21 @@ def _auto_load_data(
 
     Search order for each file
     ──────────────────────────
-    1. Caller-supplied DataFrame  (skip search entirely)
-    2. Priority artifact root     (/kaggle/input/notebooks/…/outputs)
-    3. Secondary artifact root    (/kaggle/input/project-artifacts/outputs)
-    4. cfg.output_dir             (local processed file)
-    5. cfg.data_dir / cfg.*_file  (raw CSV)
+    1. Caller-supplied DataFrame       (skip search entirely)
+    2. cfg.processed_dir               (locally processed files)
+    3. cfg.data_dir / cfg.*_file       (raw CSV fallback)
     """
     option_cols = cfg.options
 
     # ── Validation set ────────────────────────────────────────────────────────
     if val_df is None:
-        artifact_val = (
-            _artifact_subpath("processed_files", "train_processed.csv")
-            or _artifact_path("train_processed.csv")
-        )
-        processed_local = cfg.output_dir / "train_processed.csv"
+        processed_local = cfg.processed_dir / "train_processed.csv"
         raw             = cfg.data_dir / cfg.train_file
 
-        if artifact_val is not None:
-            logger.info(f"[data] Loading val_df from artifact: {artifact_val}")
-            full   = pd.read_csv(artifact_val)
+        if processed_local.exists():
+            logger.info(f"[data] Loading val_df from processed: {processed_local}")
+            full   = pd.read_csv(processed_local)
             val_df = full.iloc[int(len(full) * 0.8):].reset_index(drop=True)
-        elif processed_local.exists():
-            logger.info(f"[data] Loading val_df from local: {processed_local}")
-            val_df = pd.read_csv(processed_local)
         elif raw.exists():
             logger.info(f"[data] Loading val_df from raw: {raw}")
             full   = pd.read_csv(raw)
@@ -389,24 +299,16 @@ def _auto_load_data(
         else:
             raise FileNotFoundError(
                 "Cannot find validation data. "
-                f"Tried artifact={artifact_val}, "
-                f"local={processed_local}, raw={raw}"
+                f"Tried processed={processed_local}, raw={raw}"
             )
 
     # ── Test set ──────────────────────────────────────────────────────────────
     if test_df is None:
-        artifact_test = (
-            _artifact_subpath("processed_files", "test_processed.csv")
-            or _artifact_path("test_processed.csv")
-        )
-        processed_local = cfg.output_dir / "test_processed.csv"
+        processed_local = cfg.processed_dir / "test_processed.csv"
         raw             = cfg.data_dir / cfg.test_file
 
-        if artifact_test is not None:
-            logger.info(f"[data] Loading test_df from artifact: {artifact_test}")
-            test_df = pd.read_csv(artifact_test)
-        elif processed_local.exists():
-            logger.info(f"[data] Loading test_df from local: {processed_local}")
+        if processed_local.exists():
+            logger.info(f"[data] Loading test_df from processed: {processed_local}")
             test_df = pd.read_csv(processed_local)
         elif raw.exists():
             logger.info(f"[data] Loading test_df from raw: {raw}")
@@ -422,19 +324,21 @@ def _auto_load_data(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Artifact-aware baseline score loader
+# Baseline score loader  (uses Config artifact helpers)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_baseline_scores(out_dir, provided) -> Dict[str, np.ndarray]:
+def _load_baseline_scores(
+    cfg,
+    provided: Optional[Dict[str, np.ndarray]],
+) -> Dict[str, np.ndarray]:
     """
-    Load Phase-1 baseline .npy score arrays.
+    Load Phase-1 baseline .npy score arrays via cfg.load_artifact().
 
-    Search order per file
+    Search order per file (handled inside Config)
     ─────────────────────
-    1. Caller-supplied dict  (``provided``)
-    2. Priority artifact root   (/kaggle/input/notebooks/…/outputs)
-    3. Secondary artifact root  (/kaggle/input/project-artifacts/outputs)
-    4. cfg.output_dir           (local run outputs)
+    1. Caller-supplied dict           (``provided``)
+    2. cfg.artifacts_load_dir / name  (pre-built Kaggle input artifact)
+    3. cfg.artifacts_save_dir / name  (locally saved artifact)
     """
     if provided:
         return provided
@@ -447,70 +351,92 @@ def _load_baseline_scores(out_dir, provided) -> Dict[str, np.ndarray]:
     }
 
     for key, filename in mapping.items():
-        artifact_hit = _artifact_path(filename)
-        local        = out_dir / filename
-
-        if artifact_hit is not None:
-            scores[key] = np.load(artifact_hit)
-            logger.info(f"[baseline] Loaded {key} from artifact: {artifact_hit}")
-        elif local.exists():
-            scores[key] = np.load(local)
-            logger.info(f"[baseline] Loaded {key} from local: {local}")
+        if cfg.artifact_exists(filename):
+            try:
+                scores[key] = cfg.load_artifact(filename)
+                logger.info(f"[baseline] Loaded {key} ← {filename}")
+            except Exception as exc:
+                logger.warning(
+                    f"[baseline] Found {filename} but failed to load: {exc}"
+                )
         else:
             logger.warning(
-                f"[baseline] {filename} not found in any artifact root or "
-                f"locally ({local}). Will skip {key}."
+                f"[baseline] {filename} not found in artifacts_load_dir "
+                f"({cfg.artifacts_load_dir}) or artifacts_save_dir "
+                f"({cfg.artifacts_save_dir}). Skipping {key}."
             )
 
     return scores
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Score cache helpers (artifact-aware)
+# Score cache helpers  (uses Config artifact helpers)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_scores_with_artifact_fallback(
-    local_val_path        : Path,
-    local_test_path       : Path,
-    artifact_val_filename : str,
-    artifact_test_filename: str,
+def _try_load_scores(
+    cfg      : "Config",
+    val_name : str,
+    test_name: str,
 ) -> Optional[tuple[np.ndarray, np.ndarray]]:
     """
-    Try to load a pair of score .npy files.
+    Try to load a cached pair of score .npy files via cfg.load_artifact().
 
-    Search order
-    ────────────
-    1. Local output dir  (e.g. outputs/zs_val_scores.npy)
-    2. Artifact roots    (priority → secondary) for each filename
+    Search order (handled inside Config)
+    ─────────────────────────────────────
+    1. cfg.artifacts_load_dir / name  (pre-built Kaggle input artifact)
+    2. cfg.artifacts_save_dir / name  (locally saved artifact)
 
     Returns ``(val_scores, test_scores)`` on success, ``None`` when neither
-    source has both files.
+    source has **both** files.
     """
-    # ── 1. local cache ────────────────────────────────────────────────────────
-    if _scores_exist(local_val_path, local_test_path):
+    val_exists  = cfg.artifact_exists(val_name)
+    test_exists = cfg.artifact_exists(test_name)
+
+    if val_exists and test_exists:
+        try:
+            val_scores  = cfg.load_artifact(val_name)
+            test_scores = cfg.load_artifact(test_name)
+            logger.info(
+                f"[cache] Reusing cached score arrays: {val_name}, {test_name}"
+            )
+            return val_scores, test_scores
+        except Exception as exc:
+            logger.warning(
+                f"[cache] Score cache found but failed to load "
+                f"({val_name}, {test_name}): {exc}"
+            )
+            return None
+
+    if val_exists and not test_exists:
         logger.info(
-            f"[cache] Reusing local scores: {local_val_path.name}, "
-            f"{local_test_path.name}"
-        )
-        return np.load(local_val_path), np.load(local_test_path)
-
-    # ── 2. artifact roots ─────────────────────────────────────────────────────
-    artifact_val  = _artifact_path(artifact_val_filename)
-    artifact_test = _artifact_path(artifact_test_filename)
-
-    if artifact_val is not None and artifact_test is not None:
-        logger.info(
-            f"[cache] Reusing artifact scores: {artifact_val}, {artifact_test}"
-        )
-        return np.load(artifact_val), np.load(artifact_test)
-
-    if artifact_val is not None and artifact_test is None:
-        logger.info(
-            f"[cache] Found artifact val scores ({artifact_val}) but no test "
-            "scores – will recompute both to stay consistent."
+            f"[cache] Found {val_name} but no {test_name} – "
+            "will recompute both to stay consistent."
         )
 
-    return None  # nothing cached → caller must recompute
+    logger.info(
+        f"[cache] Score cache not found ({val_name}, {test_name}) – "
+        "will recompute."
+    )
+    return None
+
+
+def _save_scores(
+    cfg        : "Config",
+    val_scores : np.ndarray,
+    test_scores: np.ndarray,
+    val_name   : str,
+    test_name  : str,
+) -> None:
+    """
+    Save score arrays via cfg.save_artifact()
+    (always writes to artifacts_save_dir).
+    """
+    cfg.save_artifact(val_scores,  val_name)
+    cfg.save_artifact(test_scores, test_name)
+    logger.info(
+        f"[cache] Saved score artifacts to {cfg.artifacts_save_dir}: "
+        f"{val_name}, {test_name}"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -619,22 +545,24 @@ def run_milestone2(
     if option_cols is None:
         option_cols = cfg.options
 
-    # Log which artifact root is active.
-    if _ARTIFACT_ROOT is not None:
-        logger.info(f"[M2] Active artifact root: {_ARTIFACT_ROOT}")
-    else:
-        logger.info("[M2] No artifact root found – all models run from scratch.")
+    logger.info(
+        f"[M2] artifacts_load_dir : {cfg.artifacts_load_dir} "
+        f"(exists={cfg.artifacts_load_dir.exists()})"
+    )
+    logger.info(
+        f"[M2] artifacts_save_dir : {cfg.artifacts_save_dir}"
+    )
 
     # ── 2. Load data ──────────────────────────────────────────────────────────
     val_df, test_df = _auto_load_data(cfg, val_df, test_df)
     logger.info(f"[M2] val={len(val_df)} rows | test={len(test_df)} rows")
 
-    out                = cfg.output_dir
     results            : Dict[str, Any]  = {"metrics": {}}
     all_method_metrics : Dict[str, dict] = {}
 
     # ── 3. Phase-1 baseline scores ────────────────────────────────────────────
-    baseline_scores = _load_baseline_scores(out, baseline_scores)
+    # NOTE: signature changed – cfg is now the first arg (no out_dir needed)
+    baseline_scores = _load_baseline_scores(cfg, baseline_scores)
 
     # ─────────────────────────────────────────────────────────────────────────
     # RUN 1 : Zero-Shot NLI
@@ -659,14 +587,10 @@ def run_milestone2(
     )
 
     try:
-        zs_val_path  = out / "zs_val_scores.npy"
-        zs_test_path = out / "zs_test_scores.npy"
-
-        cached = _load_scores_with_artifact_fallback(
-            local_val_path         = zs_val_path,
-            local_test_path        = zs_test_path,
-            artifact_val_filename  = "zs_val_scores.npy",
-            artifact_test_filename = "zs_test_scores.npy",
+        cached = _try_load_scores(
+            cfg,
+            "zs_val_scores.npy",
+            "zs_test_scores.npy",
         )
 
         if cached is not None:
@@ -678,9 +602,13 @@ def run_milestone2(
             zs_val_scores, zs_test_scores = _run_zero_shot(
                 cfg, val_df, test_df, zs_run
             )
-            np.save(zs_val_path,  zs_val_scores)
-            np.save(zs_test_path, zs_test_scores)
-            logger.info(f"[M2] Zero-shot scores saved → {out}")
+            _save_scores(
+                cfg,
+                zs_val_scores,
+                zs_test_scores,
+                "zs_val_scores.npy",
+                "zs_test_scores.npy",
+            )
             _wandb_log(zs_run, {"cache_hit": False})
 
         zs_metrics         = _compute_metrics(zs_val_scores, val_df, option_cols)
@@ -728,14 +656,10 @@ def run_milestone2(
     )
 
     try:
-        tr_val_path  = out / "transformer_val_scores.npy"
-        tr_test_path = out / "transformer_test_scores.npy"
-
-        cached = _load_scores_with_artifact_fallback(
-            local_val_path         = tr_val_path,
-            local_test_path        = tr_test_path,
-            artifact_val_filename  = "transformer_val_scores.npy",
-            artifact_test_filename = "transformer_test_scores.npy",
+        cached = _try_load_scores(
+            cfg,
+            "transformer_val_scores.npy",
+            "transformer_test_scores.npy",
         )
 
         if cached is not None:
@@ -747,9 +671,13 @@ def run_milestone2(
             transformer_val_scores, transformer_test_scores = (
                 _run_transformer_embeddings(cfg, val_df, test_df, tr_run)
             )
-            np.save(tr_val_path,  transformer_val_scores)
-            np.save(tr_test_path, transformer_test_scores)
-            logger.info(f"[M2] Transformer scores saved → {out}")
+            _save_scores(
+                cfg,
+                transformer_val_scores,
+                transformer_test_scores,
+                "transformer_val_scores.npy",
+                "transformer_test_scores.npy",
+            )
             _wandb_log(tr_run, {"cache_hit": False})
 
         tr_metrics         = _compute_metrics(transformer_val_scores, val_df, option_cols)
@@ -867,4 +795,3 @@ def run_milestone2(
 
     results["all_method_metrics"] = all_method_metrics
     return results
-

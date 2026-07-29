@@ -43,47 +43,61 @@ logger = get_logger("Main")
 # Score-artifact helpers
 # ══════════════════════════════════════════════════════════════════════
 
-def _npy_path(cfg: Config, name: str) -> Path:
-    """Resolve an artifact path under cfg.kaggle_artifacts_dir."""
-    return Path(cfg.kaggle_artifacts_dir) / name
-
-
 def _try_load_scores(
-    cfg: Config,
-    val_name: str,
+    cfg      : Config,
+    val_name : str,
     test_name: str,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """Load cached score arrays from the Kaggle artifacts directory."""
-    val_path = Path(cfg.kaggle_artifacts_dir) / val_name
-    test_path = Path(cfg.kaggle_artifacts_dir) / test_name
+    """
+    Load cached score arrays using cfg.artifact_read_path().
 
-    if val_path.exists() and test_path.exists():
-        logger.info(f"Reusing cached score arrays: {val_name}, {test_name}")
-        return np.load(val_path), np.load(test_path)
+    Priority (handled inside Config):
+        1. Prebuilt Kaggle input artifact  (artifacts_load_dir / filename)
+        2. Locally saved artifact          (artifacts_save_dir / filename)
+
+    Returns (None, None) if neither artifact exists.
+    """
+    # Check existence first to avoid catching unrelated FileNotFoundErrors
+    val_exists  = cfg.artifact_exists(val_name)
+    test_exists = cfg.artifact_exists(test_name)
+
+    if val_exists and test_exists:
+        try:
+            val_scores  = cfg.load_artifact(val_name)
+            test_scores = cfg.load_artifact(test_name)
+            logger.info(
+                f"Reusing cached score arrays: {val_name}, {test_name}"
+            )
+            return val_scores, test_scores
+        except Exception as exc:
+            logger.warning(
+                f"Score cache found but failed to load "
+                f"({val_name}, {test_name}): {exc}"
+            )
+            return None, None
 
     logger.info(
-        f"Score cache not found ({val_name}, {test_name}) in "
-        f"{cfg.kaggle_artifacts_dir}"
+        f"Score cache not found ({val_name}, {test_name}) — "
+        f"will recompute."
     )
     return None, None
 
 
 def _save_scores(
-    cfg: Config,
-    val_scores: np.ndarray,
+    cfg        : Config,
+    val_scores : np.ndarray,
     test_scores: np.ndarray,
-    val_name: str,
-    test_name: str,
+    val_name   : str,
+    test_name  : str,
 ) -> None:
-    """Save score arrays into the writable output directory."""
-    output_dir = Path(cfg.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    np.save(output_dir / val_name, val_scores)
-    np.save(output_dir / test_name, test_scores)
-
+    """
+    Save score arrays via cfg.save_artifact()
+    (always writes to artifacts_save_dir).
+    """
+    cfg.save_artifact(val_scores,  val_name)
+    cfg.save_artifact(test_scores, test_name)
     logger.info(
-        f"Saved score artifacts to {output_dir}: "
+        f"Saved score artifacts to {cfg.artifacts_save_dir}: "
         f"{val_name}, {test_name}"
     )
 
@@ -93,12 +107,12 @@ def _save_scores(
 # ══════════════════════════════════════════════════════════════════════
 
 def setup(
-    run_name          : str           = "phase1-baseline",
+    run_name          : str            = "phase1-baseline",
     use_wandb_override: Optional[bool] = None,
 ) -> Tuple[Config, MAPAtKEvaluator]:
     """
     Initialise config, random seeds, and evaluator.
-    W&B runs are now opened (and closed) inside each _fit_* helper,
+    W&B runs are opened (and closed) inside each _fit_* helper,
     so a stale/finished run can never be passed to log().
 
     Kaggle cell usage
@@ -143,7 +157,9 @@ def load_and_preprocess(
     loader       = DataLoader(cfg)
     raw_train_df = loader.load_train()
     raw_test_df  = loader.load_test()
-    logger.info(f"Raw train: {raw_train_df.shape}  |  Raw test: {raw_test_df.shape}")
+    logger.info(
+        f"Raw train: {raw_train_df.shape}  |  Raw test: {raw_test_df.shape}"
+    )
 
     # ── Preprocessing (cached) ────────────────────────────────────────────────
     prep     = TextPreprocessor()
@@ -194,12 +210,15 @@ def _run_eda_plots(train_df: "pd.DataFrame", cfg: Config) -> None:
     ]
     word_freq = Counter(all_tokens)
     plot_top_words(
-        word_freq, title="Top Prompt Words",
-        n=25, filename="top_prompt_words.png",
+        word_freq,
+        title    = "Top Prompt Words",
+        n        = 25,
+        filename = "top_prompt_words.png",
     )
     plot_wordcloud(
-        all_tokens, title="Prompt Word Cloud",
-        filename="prompt_wordcloud.png",
+        all_tokens,
+        title    = "Prompt Word Cloud",
+        filename = "prompt_wordcloud.png",
     )
 
 
@@ -216,7 +235,19 @@ def train_models(
     evaluator    : MAPAtKEvaluator,
     run_sim_plots: bool = True,
 ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, np.ndarray]]]:
+    """
+    Fit/load TF-IDF, Word2Vec, and SBERT rankers; collect val+test scores.
 
+    Score arrays are cached in artifacts_save_dir (or loaded from
+    artifacts_load_dir if pre-built artifacts are available) via the
+    Config.save_artifact / load_artifact helpers.
+
+    Kaggle cell usage
+    -----------------
+        models, scores = train_models(
+            cfg, fit_df, val_df, test_df, option_cols, evaluator
+        )
+    """
     models : Dict[str, Any]                   = {}
     scores : Dict[str, Dict[str, np.ndarray]] = {"val": {}, "test": {}}
     metrics: Dict[str, Dict[str, float]]      = {}
@@ -305,9 +336,10 @@ def _fit_tfidf(
     Fit/load TF-IDF, score val+test, compute & log metrics.
 
     Score arrays are cached as
-        <kaggle_artifacts_dir>/tfidf_val_scores.npy
-        <kaggle_artifacts_dir>/tfidf_test_scores.npy
-    and reused on subsequent runs to skip re-encoding.
+        artifacts_save_dir / tfidf_val_scores.npy
+        artifacts_save_dir / tfidf_test_scores.npy
+    and reused on subsequent runs (or loaded from artifacts_load_dir
+    if pre-built Kaggle artifacts are present).
 
     Kaggle cell usage
     -----------------
@@ -325,6 +357,7 @@ def _fit_tfidf(
         val_scores, test_scores = _try_load_scores(
             cfg, "tfidf_val_scores.npy", "tfidf_test_scores.npy"
         )
+
         if val_scores is None:
             # Scores not cached — fit (or load) model then encode
             ranker.fit_or_load(fit_df)
@@ -362,7 +395,8 @@ def _fit_tfidf(
                 )
                 plot_similarity_distributions(
                     corr, incorr,
-                    method_name="TF-IDF", filename="tfidf_similarity_dist.png",
+                    method_name = "TF-IDF",
+                    filename    = "tfidf_similarity_dist.png",
                 )
 
     finally:
@@ -385,9 +419,10 @@ def _fit_w2v(
     Fit/load Word2Vec, score val+test, compute & log metrics.
 
     Score arrays are cached as
-        <kaggle_artifacts_dir>/w2v_val_scores.npy
-        <kaggle_artifacts_dir>/w2v_test_scores.npy
-    and reused on subsequent runs to skip re-encoding.
+        artifacts_save_dir / w2v_val_scores.npy
+        artifacts_save_dir / w2v_test_scores.npy
+    and reused on subsequent runs (or loaded from artifacts_load_dir
+    if pre-built Kaggle artifacts are present).
 
     Kaggle cell usage
     -----------------
@@ -405,6 +440,7 @@ def _fit_w2v(
         val_scores, test_scores = _try_load_scores(
             cfg, "w2v_val_scores.npy", "w2v_test_scores.npy"
         )
+
         if val_scores is None:
             ranker.fit_or_load(fit_df, test_df)
             val_scores  = ranker.predict_scores(val_df)
@@ -465,9 +501,11 @@ def _fit_sbert(
     Load SBERT, score val+test, compute & log metrics.
 
     Score arrays are cached as
-        <kaggle_artifacts_dir>/sbert_val_scores.npy
-        <kaggle_artifacts_dir>/sbert_test_scores.npy
-    and reused on subsequent runs — this avoids the expensive GPU encoding pass.
+        artifacts_save_dir / sbert_val_scores.npy
+        artifacts_save_dir / sbert_test_scores.npy
+    and reused on subsequent runs (or loaded from artifacts_load_dir
+    if pre-built Kaggle artifacts are present) — this avoids the
+    expensive GPU encoding pass.
 
     Kaggle cell usage
     -----------------
@@ -485,6 +523,7 @@ def _fit_sbert(
         val_scores, test_scores = _try_load_scores(
             cfg, "sbert_val_scores.npy", "sbert_test_scores.npy"
         )
+
         if val_scores is None:
             # No cache — run the (expensive) encoding pass and save
             val_scores  = ranker.predict_scores(val_df)
@@ -519,7 +558,8 @@ def _fit_sbert(
                 )
                 plot_similarity_distributions(
                     corr, incorr,
-                    method_name="SBERT", filename="sbert_similarity_dist.png",
+                    method_name = "SBERT",
+                    filename    = "sbert_similarity_dist.png",
                 )
 
     finally:
@@ -681,6 +721,13 @@ def run_full_pipeline(
     run_ensemble_plots : bool = True,
     submission_filename: str  = "phase1_baseline_submission.csv",
 ) -> Dict[str, Any]:
+    """
+    Chain all phases into a single end-to-end pipeline call.
+
+    Kaggle cell usage
+    -----------------
+        results = run_full_pipeline()
+    """
     # 0. Setup
     cfg, evaluator = setup(run_name=run_name)
 
@@ -690,7 +737,8 @@ def run_full_pipeline(
     )
 
     # 2. Models — each _fit_* opens/closes its own W&B run;
-    #             score arrays are cached under cfg.kaggle_artifacts_dir
+    #             score arrays are cached under cfg.artifacts_save_dir
+    #             (or loaded from cfg.artifacts_load_dir if pre-built)
     models, scores = train_models(
         cfg           = cfg,
         fit_df        = fit_df,

@@ -18,9 +18,29 @@ FIGURE_DPI   = 150
 SAVE_PLOTS   = True
 OUTPUT_DIR   = "/kaggle/working/outputs"
 PLOT_DIR     = "/kaggle/working/outputs/plots"
-PREBUILT_TFIDF_MODEL_PATH = Path("/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/models/tfidf_vectorizer.pkl")
-PREBUILT_W2V_MODEL_PATH   = Path("/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/models/word2vec.model")
-kaggle_artifacts_dir = Path("/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs")
+
+# ─────────────────────────────────────────────
+# Pre-built model paths (module-level constants)
+# ─────────────────────────────────────────────
+PREBUILT_TFIDF_MODEL_PATH = Path(
+    "/kaggle/input/notebooks/mimakhdumiiitm/"
+    "dl-22f3001418-notebook-t22026/outputs/models/tfidf_vectorizer.pkl"
+)
+PREBUILT_W2V_MODEL_PATH = Path(
+    "/kaggle/input/notebooks/mimakhdumiiitm/"
+    "dl-22f3001418-notebook-t22026/outputs/models/word2vec.model"
+)
+
+# ─────────────────────────────────────────────
+# Artifact directory constants (module-level)
+# ─────────────────────────────────────────────
+ARTIFACTS_SAVE_DIR = Path("/kaggle/working/outputs/artifacts")
+ARTIFACTS_LOAD_DIR = Path(
+    "/kaggle/input/notebooks/mimakhdumiiitm/"
+    "dl-22f3001418-notebook-t22026/output/"
+    "dl-22f3001418-notebook-t22026/outputs/artifacts"
+)
+
 
 # ─────────────────────────────────────────────
 # Logging
@@ -75,6 +95,20 @@ class Config:
     processed_dir : Path = Path("/kaggle/working/outputs/processed_files")
     plot_dir      : Path = Path("/kaggle/working/outputs/plots")
 
+    # ── Artifact directories (declared as proper dataclass fields) ──
+    # FIX: These were wrongly defined as class-level attributes before,
+    #      causing __post_init__ to fail with AttributeError.
+    artifacts_save_dir: Path = field(
+        default_factory=lambda: Path("/kaggle/working/outputs/artifacts")
+    )
+    artifacts_load_dir: Path = field(
+        default_factory=lambda: Path(
+            "/kaggle/input/notebooks/mimakhdumiiitm/"
+            "dl-22f3001418-notebook-t22026/output/"
+            "dl-22f3001418-notebook-t22026/outputs/artifacts"
+        )
+    )
+
     # ── Raw file names ─────────────────────────────────────────────
     train_file: str = "train.csv"
     test_file : str = "test.csv"
@@ -101,10 +135,7 @@ class Config:
     sbert_model     : str = "all-MiniLM-L6-v2"
     sbert_batch_size: int = 64
 
-    # ── Transformer fine-tuning (Milestones 1-3 baseline + Milestone 4) ──
-    # NOTE: milestone 4 upgrades the default backbone to deberta-v3-base;
-    #       keep deberta-v3-small here so earlier milestones are unaffected
-    #       and callers can override via  cfg.finetune_model = "...base"
+    # ── Transformer fine-tuning ────────────────────────────────────
     finetune_model              : str   = "microsoft/deberta-v3-base"
     max_length                  : int   = 512
     learning_rate               : float = 2e-5
@@ -112,17 +143,16 @@ class Config:
     num_epochs                  : int   = 3
     train_batch_size            : int   = 4
     eval_batch_size             : int   = 8
-    batch_size                  : int   = 16   # general-purpose batch size (Milestone 2-3)
-    gradient_accumulation_steps : int   = 4    # milestone 4 default (was 8)
+    batch_size                  : int   = 16
+    gradient_accumulation_steps : int   = 4
     warmup_ratio                : float = 0.1
     fp16                        : bool  = False
     gradient_checkpointing      : bool  = True
 
     # ── LoRA / PEFT (Milestone 4) ──────────────────────────────────
-    lora_r             : int            = 16
-    lora_alpha         : int            = 32
-    lora_dropout       : float          = 0.1
-    # None  → auto-detected per architecture inside the trainer
+    lora_r             : int   = 16
+    lora_alpha         : int   = 32
+    lora_dropout       : float = 0.1
     lora_target_modules: Optional[List[str]] = field(
         default_factory=lambda: ["query_proj", "value_proj"]
     )
@@ -143,44 +173,37 @@ class Config:
     seed       : int  = 42
     num_workers: int  = 4
     pin_memory : bool = True
-    device     : str  = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
-    n_gpus     : int  = field(default_factory=torch.cuda.device_count)
+    device     : str  = field(
+        default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu"
+    )
+    n_gpus: int = field(default_factory=torch.cuda.device_count)
 
     # ── Persistence flags ──────────────────────────────────────────
     use_cached_models   : bool = True
     use_cached_processed: bool = True
 
     # ── Zero-shot NLI model (Milestone 2-3) ───────────────────────
-    zs_model_key: str = "deberta-small"   # see ZeroShotMCQRanker.NLI_MODELS
+    zs_model_key: str = "deberta-small"
 
     # ── Transformer embedding model (Milestone 2-3) ───────────────
-    tr_model_key: str = "deberta"         # see TransformerEmbeddingRanker.SUPPORTED_MODELS
-
-    # ── Kaggle artefact mount ──────────────────────────────────────
-    # Prefer the pre-built Kaggle dataset when available; callers may
-    # set this to None to force local re-training.
-    kaggle_artifacts_dir: Optional[Path] = Path(
-        "/kaggle/input/notebooks/mimakhdumiiitm/"
-        "dl-22f3001418-notebook-t22026/outputs"
-    )
+    tr_model_key: str = "deberta"
 
     # ──────────────────────────────────────────────────────────────
     def __post_init__(self) -> None:
         """Create all output directories; log hardware info."""
 
-        # ── Normalise Path types (guards against str being passed in) ──
-        self.data_dir       = Path(self.data_dir)
-        self.output_dir     = Path(self.output_dir)
-        self.model_dir      = Path(self.model_dir)
-        self.submission_dir = Path(self.submission_dir)
-        self.processed_dir  = Path(self.processed_dir)
-        self.plot_dir       = Path(self.plot_dir)
-
-        if self.kaggle_artifacts_dir is not None:
-            self.kaggle_artifacts_dir = Path(self.kaggle_artifacts_dir)
+        # ── Normalise Path types ───────────────────────────────────
+        self.data_dir           = Path(self.data_dir)
+        self.output_dir         = Path(self.output_dir)
+        self.model_dir          = Path(self.model_dir)
+        self.submission_dir     = Path(self.submission_dir)
+        self.processed_dir      = Path(self.processed_dir)
+        self.plot_dir           = Path(self.plot_dir)
+        # FIX: Now safe because these are proper dataclass fields
+        self.artifacts_save_dir = Path(self.artifacts_save_dir)
+        self.artifacts_load_dir = Path(self.artifacts_load_dir)
 
         # ── Normalise lora_target_modules ─────────────────────────
-        # Accept None (auto-detect) or a plain list passed as str by mistake
         if self.lora_target_modules is not None and not isinstance(
             self.lora_target_modules, list
         ):
@@ -206,6 +229,7 @@ class Config:
             self.submission_dir,
             self.processed_dir,
             self.plot_dir,
+            self.artifacts_save_dir,
         ]:
             d.mkdir(parents=True, exist_ok=True)
 
@@ -259,7 +283,7 @@ class Config:
     @property
     def w2v_model_path(self) -> Path:
         return Path(PREBUILT_W2V_MODEL_PATH)
-    
+
     # ── Milestone 4 convenience helpers ───────────────────────────
     @property
     def finetuned_model_path(self) -> Path:
@@ -273,7 +297,66 @@ class Config:
 
     def effective_batch_size(self) -> int:
         """
-        The logical batch size seen by the optimiser after gradient
-        accumulation — useful for logging and LR-scaling decisions.
+        Logical batch size seen by the optimiser after gradient accumulation.
+        Useful for logging and LR-scaling decisions.
         """
         return self.train_batch_size * max(self.gradient_accumulation_steps, 1)
+
+    # ── Artifact helpers (*.npy) ───────────────────────────────────
+    def artifact_read_path(self, filename: str) -> Path:
+        """
+        Return the path from which a .npy artifact should be LOADED.
+
+        Priority:
+            1. Prebuilt Kaggle input artifact  (artifacts_load_dir / filename)
+            2. Locally saved artifact          (artifacts_save_dir / filename)
+
+        Raises FileNotFoundError if neither exists.
+        """
+        prebuilt = self.artifacts_load_dir / filename
+        if prebuilt.exists():
+            logger.info(f"[artifact] Loading prebuilt  → {prebuilt}")
+            return prebuilt
+
+        local = self.artifacts_save_dir / filename
+        if local.exists():
+            logger.info(f"[artifact] Loading local     → {local}")
+            return local
+
+        raise FileNotFoundError(
+            f"Artifact '{filename}' not found in either:\n"
+            f"  {prebuilt}\n  {local}"
+        )
+
+    def artifact_write_path(self, filename: str) -> Path:
+        """
+        Return the path to which a .npy artifact should be SAVED.
+        Always writes to artifacts_save_dir (local working directory).
+        """
+        dest = self.artifacts_save_dir / filename
+        logger.info(f"[artifact] Saving             → {dest}")
+        return dest
+
+    def save_artifact(self, array: "np.ndarray", filename: str) -> Path:
+        """
+        Save a numpy array as  artifacts_save_dir / filename.
+        Returns the path that was written.
+        """
+        dest = self.artifact_write_path(filename)
+        np.save(dest, array)
+        return dest
+
+    def load_artifact(self, filename: str) -> "np.ndarray":
+        """
+        Load a numpy array, preferring the prebuilt Kaggle artifact.
+        Raises FileNotFoundError if neither location has the file.
+        """
+        src = self.artifact_read_path(filename)
+        return np.load(src, allow_pickle=True)
+
+    def artifact_exists(self, filename: str) -> bool:
+        """True if the artifact is available from either location."""
+        return (
+            (self.artifacts_load_dir / filename).exists()
+            or (self.artifacts_save_dir / filename).exists()
+        )
