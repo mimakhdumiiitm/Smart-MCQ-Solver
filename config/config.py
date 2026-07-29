@@ -36,9 +36,7 @@ PREBUILT_W2V_MODEL_PATH = Path(
 # ─────────────────────────────────────────────
 ARTIFACTS_SAVE_DIR = Path("/kaggle/working/outputs/artifacts")
 ARTIFACTS_LOAD_DIR = Path(
-    "/kaggle/input/notebooks/mimakhdumiiitm/"
-    "dl-22f3001418-notebook-t22026/output/"
-    "dl-22f3001418-notebook-t22026/outputs/artifacts"
+    "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/artifacts/"
 )
 
 
@@ -103,9 +101,7 @@ class Config:
     )
     artifacts_load_dir: Path = field(
         default_factory=lambda: Path(
-            "/kaggle/input/notebooks/mimakhdumiiitm/"
-            "dl-22f3001418-notebook-t22026/output/"
-            "dl-22f3001418-notebook-t22026/outputs/artifacts"
+            "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/artifacts/"
         )
     )
 
