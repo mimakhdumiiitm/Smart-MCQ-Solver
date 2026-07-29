@@ -2,6 +2,7 @@
 
 import logging
 from collections import Counter
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
@@ -39,13 +40,60 @@ logger = get_logger("Main")
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Score-artifact helpers
+# ══════════════════════════════════════════════════════════════════════
+
+def _npy_path(cfg: Config, name: str) -> Path:
+    """Resolve an artifact path under cfg.kaggle_artifacts_dir."""
+    return Path(cfg.kaggle_artifacts_dir) / name
+
+
+def _try_load_scores(
+    cfg      : Config,
+    val_name : str,
+    test_name: str,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Return (val_scores, test_scores) from disk when both files exist,
+    otherwise return (None, None) so the caller re-computes them.
+    """
+    val_path  = _npy_path(cfg, val_name)
+    test_path = _npy_path(cfg, test_name)
+
+    if val_path.exists() and test_path.exists():
+        val_scores  = np.load(str(val_path))
+        test_scores = np.load(str(test_path))
+        logger.info(f"Reusing cached score arrays: {val_name}, {test_name}")
+        return val_scores, test_scores
+
+    logger.info(
+        f"Score cache not found ({val_name} / {test_name}) — will compute."
+    )
+    return None, None
+
+
+def _save_scores(
+    cfg       : Config,
+    val_scores: np.ndarray,
+    test_scores: np.ndarray,
+    val_name  : str,
+    test_name : str,
+) -> None:
+    """Persist val+test score arrays to cfg.kaggle_artifacts_dir."""
+    Path(cfg.kaggle_artifacts_dir).mkdir(parents=True, exist_ok=True)
+    np.save(str(_npy_path(cfg, val_name)),  val_scores)
+    np.save(str(_npy_path(cfg, test_name)), test_scores)
+    logger.info(f"Saved score artifacts: {val_name}, {test_name}")
+
+
+# ══════════════════════════════════════════════════════════════════════
 # PHASE 0 — Config, seed, W&B
 # ══════════════════════════════════════════════════════════════════════
 
 def setup(
     run_name          : str           = "phase1-baseline",
     use_wandb_override: Optional[bool] = None,
-) -> Tuple[Config, MAPAtKEvaluator]:          # ← wandb_runs removed from return
+) -> Tuple[Config, MAPAtKEvaluator]:
     """
     Initialise config, random seeds, and evaluator.
     W&B runs are now opened (and closed) inside each _fit_* helper,
@@ -65,7 +113,7 @@ def setup(
     MAPAtKEvaluator.run_unit_tests()
 
     logger.info("Setup complete.")
-    return cfg, evaluator                     
+    return cfg, evaluator
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -89,7 +137,7 @@ def load_and_preprocess(
     -----------------
         train_df, test_df, fit_df, val_df, option_cols = load_and_preprocess(cfg)
     """
-    # ── Raw data ─────────────────────────────────────────────────────────────
+    # ── Raw data ──────────────────────────────────────────────────────────────
     loader       = DataLoader(cfg)
     raw_train_df = loader.load_train()
     raw_test_df  = loader.load_test()
@@ -166,13 +214,12 @@ def train_models(
     evaluator    : MAPAtKEvaluator,
     run_sim_plots: bool = True,
 ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, np.ndarray]]]:
-    
+
     models : Dict[str, Any]                   = {}
     scores : Dict[str, Dict[str, np.ndarray]] = {"val": {}, "test": {}}
     metrics: Dict[str, Dict[str, float]]      = {}
 
     # ── TF-IDF ───────────────────────────────────────────────────────────────
-    # Run opens its own W&B run, logs, then closes before returning.
     models["tfidf"], scores, metrics["tfidf"] = _fit_tfidf(
         cfg           = cfg,
         fit_df        = fit_df,
@@ -221,22 +268,16 @@ def _log_common_metrics(
     """
     Compute and log the shared metric set (accuracy, f1, precision, recall,
     map_at_k) to the supplied W&B run.
-
-    Using identical metric *names* across all three runs is what allows W&B's
-    "Compare runs" view to place them side-by-side on the same axes.
     """
     clf_met   = evaluator.compute_classification_metrics(actuals, val_preds)
     map_score = evaluator.mean_average_precision_at_k(actuals, val_preds)
 
-    # Common metric payload — keys are identical for every model so that W&B
-    # can compare runs on the same axes without any renaming.
     common_metrics = {
         "accuracy" : clf_met.get("accuracy",  0.0),
         "f1"       : clf_met.get("f1",        0.0),
         "precision": clf_met.get("precision", 0.0),
         "recall"   : clf_met.get("recall",    0.0),
         "map_at_k" : map_score,
-        # Include the raw clf_met dict as well so per-class breakdowns survive
         **clf_met,
     }
 
@@ -260,7 +301,11 @@ def _fit_tfidf(
 ) -> Tuple[TFIDFRanker, Dict, Dict]:
     """
     Fit/load TF-IDF, score val+test, compute & log metrics.
-    Opens its own W&B run, logs, then closes it before returning.
+
+    Score arrays are cached as
+        <kaggle_artifacts_dir>/tfidf_val_scores.npy
+        <kaggle_artifacts_dir>/tfidf_test_scores.npy
+    and reused on subsequent runs to skip re-encoding.
 
     Kaggle cell usage
     -----------------
@@ -269,15 +314,29 @@ def _fit_tfidf(
             evaluator, scores, run_sim_plots=True
         )
     """
-    # ── Open a fresh W&B run just for TF-IDF ─────────────────────────────────
     wandb_run = init_wandb(cfg, run_name="phase1-tfidf", model_tag="tfidf")
 
     try:
         ranker = TFIDFRanker(cfg)
-        ranker.fit_or_load(fit_df)
 
-        val_scores  = ranker.predict_scores(val_df)
-        test_scores = ranker.predict_scores(test_df)
+        # ── Try cached score arrays first ─────────────────────────────────────
+        val_scores, test_scores = _try_load_scores(
+            cfg, "tfidf_val_scores.npy", "tfidf_test_scores.npy"
+        )
+        if val_scores is None:
+            # Scores not cached — fit (or load) model then encode
+            ranker.fit_or_load(fit_df)
+            val_scores  = ranker.predict_scores(val_df)
+            test_scores = ranker.predict_scores(test_df)
+            _save_scores(
+                cfg, val_scores, test_scores,
+                "tfidf_val_scores.npy", "tfidf_test_scores.npy",
+            )
+        else:
+            # Scores already on disk — still need a fitted vectorizer for any
+            # downstream callers that use ranker.vectorizer directly.
+            ranker.fit_or_load(fit_df)
+
         scores["val"]["tfidf"]  = val_scores
         scores["test"]["tfidf"] = test_scores
 
@@ -293,7 +352,6 @@ def _fit_tfidf(
 
         if cfg.answer_col in val_df.columns:
             actuals = val_df[cfg.answer_col].tolist()
-            # wandb_run is guaranteed fresh here — log is safe
             _log_common_metrics(wandb_run, evaluator, actuals, val_preds, "TF-IDF")
 
             if run_sim_plots:
@@ -306,11 +364,11 @@ def _fit_tfidf(
                 )
 
     finally:
-        # ── Always close the run, even if an exception is raised ──────────────
         finish_run(wandb_run)
         logger.info("W&B run 'tfidf' closed.")
 
     return ranker, scores, met
+
 
 def _fit_w2v(
     cfg        : Config,
@@ -323,7 +381,11 @@ def _fit_w2v(
 ) -> Tuple[Word2VecRanker, Dict, Dict]:
     """
     Fit/load Word2Vec, score val+test, compute & log metrics.
-    Opens its own W&B run, logs, then closes it before returning.
+
+    Score arrays are cached as
+        <kaggle_artifacts_dir>/w2v_val_scores.npy
+        <kaggle_artifacts_dir>/w2v_test_scores.npy
+    and reused on subsequent runs to skip re-encoding.
 
     Kaggle cell usage
     -----------------
@@ -332,15 +394,27 @@ def _fit_w2v(
             evaluator, scores
         )
     """
-    # ── Open a fresh W&B run just for Word2Vec ────────────────────────────────
     wandb_run = init_wandb(cfg, run_name="phase1-word2vec", model_tag="word2vec")
 
     try:
         ranker = Word2VecRanker(cfg)
-        ranker.fit_or_load(fit_df, test_df)
 
-        val_scores  = ranker.predict_scores(val_df)
-        test_scores = ranker.predict_scores(test_df)
+        # ── Try cached score arrays first ─────────────────────────────────────
+        val_scores, test_scores = _try_load_scores(
+            cfg, "w2v_val_scores.npy", "w2v_test_scores.npy"
+        )
+        if val_scores is None:
+            ranker.fit_or_load(fit_df, test_df)
+            val_scores  = ranker.predict_scores(val_df)
+            test_scores = ranker.predict_scores(test_df)
+            _save_scores(
+                cfg, val_scores, test_scores,
+                "w2v_val_scores.npy", "w2v_test_scores.npy",
+            )
+        else:
+            # Keep the model available for the PCA visualisation below
+            ranker.fit_or_load(fit_df, test_df)
+
         scores["val"]["w2v"]  = val_scores
         scores["test"]["w2v"] = test_scores
 
@@ -375,6 +449,7 @@ def _fit_w2v(
 
     return ranker, scores, met
 
+
 def _fit_sbert(
     cfg          : Config,
     val_df       : "pd.DataFrame",
@@ -386,7 +461,11 @@ def _fit_sbert(
 ) -> Tuple[SBERTRanker, Dict, Dict]:
     """
     Load SBERT, score val+test, compute & log metrics.
-    Opens its own W&B run, logs, then closes it before returning.
+
+    Score arrays are cached as
+        <kaggle_artifacts_dir>/sbert_val_scores.npy
+        <kaggle_artifacts_dir>/sbert_test_scores.npy
+    and reused on subsequent runs — this avoids the expensive GPU encoding pass.
 
     Kaggle cell usage
     -----------------
@@ -395,14 +474,26 @@ def _fit_sbert(
             evaluator, scores, run_sim_plots=True
         )
     """
-    # ── Open a fresh W&B run just for SBERT ──────────────────────────────────
     wandb_run = init_wandb(cfg, run_name="phase1-sbert", model_tag="sbert")
 
     try:
         ranker = SBERTRanker(cfg)
 
-        val_scores  = ranker.predict_scores(val_df)
-        test_scores = ranker.predict_scores(test_df)
+        # ── Try cached score arrays first ─────────────────────────────────────
+        val_scores, test_scores = _try_load_scores(
+            cfg, "sbert_val_scores.npy", "sbert_test_scores.npy"
+        )
+        if val_scores is None:
+            # No cache — run the (expensive) encoding pass and save
+            val_scores  = ranker.predict_scores(val_df)
+            test_scores = ranker.predict_scores(test_df)
+            _save_scores(
+                cfg, val_scores, test_scores,
+                "sbert_val_scores.npy", "sbert_test_scores.npy",
+            )
+        # Note: no else branch needed — SBERT has no extra state to restore
+        # because predict_scores() uses the pre-trained model directly.
+
         scores["val"]["sbert"]  = val_scores
         scores["test"]["sbert"] = test_scores
 
@@ -435,6 +526,7 @@ def _fit_sbert(
 
     return ranker, scores, met
 
+
 def _split_sim_scores(
     score_matrix: np.ndarray,
     actuals     : List[str],
@@ -460,7 +552,6 @@ def run_ensemble(
     evaluator  : MAPAtKEvaluator,
     run_plots  : bool = True,
 ) -> Tuple[List[List[str]], List[List[str]], Dict[str, float]]:
-
     """
     Grid-search best weights → fuse val & test scores → evaluate.
 
@@ -474,10 +565,9 @@ def run_ensemble(
     Kaggle cell usage
     -----------------
         ens_val_preds, ens_test_preds, map_scores = run_ensemble(
-            cfg, scores, val_df, option_cols, evaluator, wandb_runs
+            cfg, scores, val_df, option_cols, evaluator
         )
     """
-
     actuals = val_df[cfg.answer_col].tolist()
 
     # ── Grid-search best weights ──────────────────────────────────────────────
@@ -569,8 +659,7 @@ def print_summary(
 ) -> None:
     """
     Print final MAP@K table.
-    W&B runs are already closed inside each _fit_* helper,
-    so nothing needs to be closed here.
+    W&B runs are already closed inside each _fit_* helper.
     """
     sep = "═" * 52
     logger.info(f"\n{sep}\n  PHASE 1 SUMMARY\n{sep}")
@@ -590,7 +679,7 @@ def run_full_pipeline(
     run_ensemble_plots : bool = True,
     submission_filename: str  = "phase1_baseline_submission.csv",
 ) -> Dict[str, Any]:
-    # 0. Setup — no longer returns wandb_runs
+    # 0. Setup
     cfg, evaluator = setup(run_name=run_name)
 
     # 1. Data
@@ -598,7 +687,8 @@ def run_full_pipeline(
         cfg, run_eda_plots=run_eda_plots
     )
 
-    # 2. Models — each _fit_* opens/closes its own W&B run
+    # 2. Models — each _fit_* opens/closes its own W&B run;
+    #             score arrays are cached under cfg.kaggle_artifacts_dir
     models, scores = train_models(
         cfg           = cfg,
         fit_df        = fit_df,
@@ -624,7 +714,7 @@ def run_full_pipeline(
         cfg, test_df, ens_test_preds, filename=submission_filename
     )
 
-    # 5. Summary — W&B already closed, just prints
+    # 5. Summary
     print_summary(map_scores, cfg)
 
     return {
