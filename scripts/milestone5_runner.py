@@ -1,20 +1,4 @@
 # scripts/milestone5_runner.py
-"""
-Ensemble runner – Milestone 4 (Ensembling week).
-
-Loads pre-computed .npy score artefacts produced by M1/M2/M3,
-runs all ensemble strategies, logs to W&B, and saves the best
-ensemble scores to cfg.output_dir.
-
-Expected artefacts in cfg.output_dir
---------------------------------------
-tfidf_val.npy         tfidf_test.npy
-w2v_val.npy           w2v_test.npy
-sbert_val.npy         sbert_test.npy        (optional but recommended)
-rag_combined_val.npy  rag_combined_test.npy (from M3, optional)
-
-Nothing from previous milestones is re-run.
-"""
 from __future__ import annotations
 
 import logging
