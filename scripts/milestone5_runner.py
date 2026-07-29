@@ -32,33 +32,105 @@ _MODEL_RUN_NAME: Dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# Artefact directory resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_score_dirs(cfg: Any) -> List[Path]:
+    """
+    Return candidate directories to search for .npy score artefacts,
+    in priority order:
+        1. cfg.ARTIFACTS_LOAD_DIR  (pre-computed, read-only Kaggle input)
+        2. cfg.output_dir          (freshly generated in the working tree)
+
+    Tries multiple possible attribute names for the artefacts directory
+    so the function works regardless of the exact Config field name.
+    """
+    dirs: List[Path] = []
+
+    # ── primary: pre-computed artefacts from a previous notebook run ──────
+    for attr in (
+        "ARTIFACTS_LOAD_DIR",
+        "artifacts_load_dir",
+        "artifacts_dir",
+        "ARTIFACT_DIR",
+        "artifact_dir",
+    ):
+        if hasattr(cfg, attr):
+            raw = getattr(cfg, attr)
+            if raw:                          # skip if empty / None
+                p = Path(raw)
+                if p.exists():
+                    dirs.append(p)
+                    logger.info(f"[artefact] cfg.{attr} resolved → {p}")
+                else:
+                    logger.warning(
+                        f"[artefact] cfg.{attr} is set but path does not exist: {p}"
+                    )
+            break                            # stop after first matching attr
+
+    # ── fallback: current working output directory ─────────────────────────
+    out = Path(cfg.output_dir)
+    if out not in dirs:
+        dirs.append(out)
+        logger.info(f"[artefact] output_dir fallback → {out}")
+
+    return dirs
+
+
+# ---------------------------------------------------------------------------
 # Artefact helpers
 # ---------------------------------------------------------------------------
 
 def _load_score_pair(
-    directory: Path,
-    val_file : str,
-    test_file: str,
+    directories: List[Path],
+    val_file   : str,
+    test_file  : str,
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    """Load a (val, test) score pair – returns None if either file is missing."""
-    vp, tp = directory / val_file, directory / test_file
-    if vp.exists() and tp.exists():
-        return np.load(vp), np.load(tp)
-    logger.warning(f"[artefact] Missing file(s): {val_file} or {test_file} in {directory}")
+    """
+    Search each directory in order; return the first complete (val, test) pair.
+    Returns None if no directory contains both files.
+    """
+    for directory in directories:
+        vp = directory / val_file
+        tp = directory / test_file
+        if vp.exists() and tp.exists():
+            logger.info(
+                f"[artefact] Found '{val_file}' + '{test_file}' in {directory}"
+            )
+            return np.load(vp), np.load(tp)
+        # Log which individual file is missing for easier debugging
+        for p in (vp, tp):
+            if not p.exists():
+                logger.debug(f"[artefact] Not found: {p}")
+
+    logger.warning(
+        f"[artefact] Could not locate '{val_file}' / '{test_file}' "
+        f"in any of: {[str(d) for d in directories]}"
+    )
     return None
 
 
 def _load_all_scores(
     out: Path,
+    cfg: Any = None,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
     """
     Discover and load every available model score pair.
 
+    Searches ARTIFACTS_LOAD_DIR (if configured in cfg) before output_dir,
+    so pre-computed Kaggle input artefacts are found automatically.
+
     Returns
     -------
-    val_scores  : {model_name: (n_val,  n_options)}
-    test_scores : {model_name: (n_test, n_options)}
+    val_scores  : {model_name: ndarray of shape (n_val,  n_options)}
+    test_scores : {model_name: ndarray of shape (n_test, n_options)}
     """
+    # Build ordered search-path list
+    if cfg is not None:
+        search_dirs = _resolve_score_dirs(cfg)
+    else:
+        search_dirs = [out]
+
     candidates = {
         "tfidf"       : ("tfidf_val.npy",       "tfidf_test.npy"),
         "w2v"         : ("w2v_val.npy",          "w2v_test.npy"),
@@ -70,12 +142,14 @@ def _load_all_scores(
     test_scores: Dict[str, np.ndarray] = {}
 
     for name, (vf, tf) in candidates.items():
-        pair = _load_score_pair(out, vf, tf)
+        pair = _load_score_pair(search_dirs, vf, tf)
         if pair is not None:
             val_scores[name], test_scores[name] = pair
-            logger.info(f"[artefact] Loaded scores: {name}  "
-                        f"val={val_scores[name].shape}  "
-                        f"test={test_scores[name].shape}")
+            logger.info(
+                f"[artefact] Loaded '{name}'  "
+                f"val={val_scores[name].shape}  "
+                f"test={test_scores[name].shape}"
+            )
 
     return val_scores, test_scores
 
@@ -132,7 +206,6 @@ def _compute_all_metrics(
 
 # ---------------------------------------------------------------------------
 # W&B per-model logging
-# Uses the project's existing init_wandb / log_model_metrics / finish_run
 # ---------------------------------------------------------------------------
 
 def _log_per_model_wandb(
@@ -154,7 +227,6 @@ def _log_per_model_wandb(
     -------
     per_model_metrics : {model_name: {metric_name: value}}
     """
-    # Import the project-level helpers – do NOT redefine them
     from utils.wandb_init import init_wandb, log_model_metrics, finish_run
 
     per_model_metrics: Dict[str, Dict[str, float]] = {}
@@ -184,12 +256,9 @@ def _log_per_model_wandb(
         )
 
         # ── log all five required metrics ─────────────────────────────────
-        # log_model_metrics already warns if any key from REQUIRED_METRICS
-        # is missing, so passing the full dict is all we need.
         log_model_metrics(run, metrics)
 
         # ── additional structured logging for richer W&B UI ───────────────
-        #    (histograms, per-class breakdown, score distribution)
         if run is not None:
             try:
                 import wandb
@@ -218,7 +287,6 @@ def _log_per_model_wandb(
                             })
 
             except Exception as exc:
-                # Never crash the run on optional rich logging
                 logger.warning(f"[W&B rich logging] {model_name}: {exc}")
 
         # ── close run ─────────────────────────────────────────────────────
@@ -256,7 +324,7 @@ def _log_ensemble_wandb(
     run = init_wandb(
         config   = cfg,
         run_name = f"ensemble-best-{best_method}",
-        model_tag= "sbert",          # tag must be one of the three known tags
+        model_tag= "sbert",
     )
 
     if run is not None:
@@ -313,11 +381,9 @@ def run_milestone5(
         ensemble_method  str
         metrics          dict  – MAP@3 per strategy + per individual model
     """
-    # ── project imports (nothing re-run, just reusing existing objects) ────
+    # ── project imports ────────────────────────────────────────────────────
     from config.config import Config
     from src.ensemble.orchestrator import EnsembleOrchestrator
-
-    # Reuse the evaluator that was defined in M2
     from scripts.milestone2_runner import _Evaluator
 
     cfg         = Config()
@@ -330,18 +396,34 @@ def run_milestone5(
     val_labels: List[str] = val_df[answer_col].tolist()
 
     # ── 1. Load score artefacts ────────────────────────────────────────────
-    val_scores, test_scores = _load_all_scores(out)
+    # Passes cfg so _load_all_scores can check ARTIFACTS_LOAD_DIR first,
+    # then fall back to output_dir.
+    val_scores, test_scores = _load_all_scores(out, cfg=cfg)
+
+    # ── Diagnostics: show exactly where we searched and what we found ──────
+    search_dirs = _resolve_score_dirs(cfg)
+    logger.info(
+        f"[ensemble] Searched directories: {[str(d) for d in search_dirs]}"
+    )
+    logger.info(
+        f"[ensemble] Score sources found: {list(val_scores.keys()) or 'NONE'}"
+    )
 
     if len(val_scores) < 2:
         raise RuntimeError(
-            f"Need at least 2 score sources in {out}. "
-            "Run M1 / M2 / M3 first to generate .npy artefacts."
+            f"Need at least 2 score sources to run the ensemble.\n"
+            f"Found only: {list(val_scores.keys()) or 'none'}\n\n"
+            f"Searched directories (in order):\n"
+            + "\n".join(f"  {d}" for d in search_dirs)
+            + "\n\nMake sure M1 / M2 / M3 have been run and their .npy "
+              "artefacts exist in one of the above directories.\n"
+              "Expected files: tfidf_val.npy, tfidf_test.npy, "
+              "w2v_val.npy, w2v_test.npy, sbert_val.npy, sbert_test.npy"
         )
 
     logger.info(f"[ensemble] Available sources: {list(val_scores.keys())}")
 
-    # ── 2. Per-model W&B runs (satisfies the ≥3 comparable runs rule) ─────
-    #       Uses init_wandb → log_model_metrics → finish_run from wandb_init.py
+    # ── 2. Per-model W&B runs ──────────────────────────────────────────────
     per_model_metrics = _log_per_model_wandb(
         val_scores, val_labels, evaluator, option_cols, cfg
     )
