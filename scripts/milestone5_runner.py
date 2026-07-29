@@ -423,10 +423,10 @@ def run_milestone5(
     # ── project imports ────────────────────────────────────────────────────
     from config.config import Config
     from src.ensemble.orchestrator import EnsembleOrchestrator
-    from scripts.milestone2_runner import _Evaluator
+    from src.evaluation.evaluator import MAPAtKEvaluator
 
     cfg         = Config()
-    evaluator   = _Evaluator()
+    evaluator   = MAPAtKEvaluator(k=3)
     option_cols : List[str] = cfg.options
     answer_col  : str       = getattr(cfg, "answer_col", "answer")
     out         : Path      = Path(cfg.output_dir)
