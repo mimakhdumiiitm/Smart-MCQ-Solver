@@ -434,6 +434,21 @@ def run_milestone5(
 
     val_labels: List[str] = val_df[answer_col].tolist()
 
+    load_dir = Path(cfg.ARTIFACTS_LOAD_DIR)
+
+    ensemble_val_file = load_dir / "ensemble_val.npy"
+    ensemble_test_file = load_dir / "ensemble_test.npy"
+
+    if ensemble_val_file.exists() and ensemble_test_file.exists():
+        logger.info("Using precomputed Milestone-5 ensemble artifacts.")
+
+        return {
+            "ensemble_val": np.load(ensemble_val_file),
+            "ensemble_test": np.load(ensemble_test_file),
+            "ensemble_method": "precomputed",
+            "metrics": {},
+        }
+
     # ── 1. Load score artefacts ────────────────────────────────────────────
     # Passes cfg so _load_all_scores can check ARTIFACTS_LOAD_DIR first,
     # then fall back to output_dir.
