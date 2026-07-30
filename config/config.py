@@ -1,146 +1,3 @@
-<<<<<<< HEAD
-# config/config.py
-# updated for mielstone 2
-
-import os
-import torch
-
-# ==================================================================
-# PATHS — KAGGLE ENVIRONMENT
-# ==================================================================
-
-OUTPUT_DIR      = "/kaggle/working/outputs"
-MODEL_DIR       = "/kaggle/working/models"
-
-# Kaggle Competition Input
-TRAIN_PATH      = "/kaggle/input/competitions/smart-mcq-solver-challenge/train.csv"
-TEST_PATH       = "/kaggle/input/competitions/smart-mcq-solver-challenge/test.csv"
-SUBMISSION_PATH = "/kaggle/input/competitions/smart-mcq-solver-challenge/sample_submission.csv"
-
-# Processed Data Paths (output from EDA pipeline)
-TRAIN_PROCESSED_PATH = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/processed_files/train_processed.csv"
-TEST_PROCESSED_PATH  = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/processed_files/test_processed.csv"
-
-# Processed files output directory
-PROCESSED_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "processed_files")
-os.makedirs(PROCESSED_OUTPUT_DIR, exist_ok=True)
-TRAIN_OUTPUT_PATH = os.path.join(PROCESSED_OUTPUT_DIR, "train_processed.csv")
-TEST_OUTPUT_PATH = os.path.join(PROCESSED_OUTPUT_DIR, "test_processed.csv")
-
-# Pre-trained Model Inputs (from previous notebook)
-W2V_MODEL_PATH    = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/models/w2v.model"
-TFIDF_INPUT_PATH  = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/models/tfidf.pkl"
-TFIDF_OUTPUT_PATH = os.path.join(MODEL_DIR, "tfidf.pkl")
-
-# Submission Output
-SUBMISSION_OUT_PATH = "/kaggle/working/submission.csv"
-RESULTS_PLOT_PATH   = "/kaggle/working/results_plot.png"
-
-# ==================================================================
-# COLUMN NAMES
-# ==================================================================
-ID_COL      = "id"
-PROMPT_COL  = "prompt"
-ANSWER_COL  = "answer"
-OPTION_COLS = ["A", "B", "C", "D", "E"]
-TEXT_COLS   = [PROMPT_COL] + OPTION_COLS
-
-# ==================================================================
-# TEXT PREPROCESSING  (EDA pipeline)
-# ==================================================================
-
-REMOVE_STOPWORDS = True
-LEMMATIZE        = True
-STEM             = False
-MIN_TOKEN_LENGTH = 2
-
-# ==================================================================
-# TF-IDF SETTINGS  (EDA pipeline)
-# ==================================================================
-
-TFIDF_MAX_FEATURES = 5000
-TFIDF_NGRAM_RANGE  = (1, 2)
-TFIDF_MIN_DF       = 1
-TFIDF_MAX_DF       = 0.95
-TFIDF_SUBLINEAR_TF = True
-
-# ==================================================================
-# WORD2VEC SETTINGS  (EDA pipeline)
-# ==================================================================
-
-W2V_VECTOR_SIZE = 100
-W2V_WINDOW      = 5
-W2V_MIN_COUNT   = 1
-W2V_SG          = 1        
-W2V_EPOCHS      = 10
-W2V_WORKERS     = 4
-W2V_SEED        = 42
-
-# ==================================================================
-# GENERAL
-# ==================================================================
-
-RANDOM_SEED = 42
-TOP_K       = 3            # MAP@K evaluation
-
-# ==================================================================
-# VISUALIZATION
-# ==================================================================
-
-PLOT_STYLE  = "seaborn-v0_8-whitegrid"
-COLORS      = ["#2E86AB", "#A23B72", "#F18F01", "#C73E1D", "#3B1F2B"]
-FIGURE_DPI  = 150
-SAVE_PLOTS  = False
-
-# ==================================================================
-# GPU / DEVICE SETTINGS  (Transformer pipeline)
-# ==================================================================
-# CUDA environment flags
-CUDA_LAUNCH_BLOCKING = "1"     # Better CUDA error reporting
-TORCH_USE_CUDA_DSA   = "1"     # Device-side assertions
-
-# Minimum compute capability to use CUDA (6.0 = P100 compatible)
-MIN_COMPUTE_CAPABILITY = 60    # cc = major*10 + minor  (6.0 → 60)
-
-# Precision settings
-# P100 has limited float16 support → use float32
-USE_FP16 = False
-TORCH_DTYPE = torch.float32
-
-# ==================================================================
-# TRANSFORMER MODEL SETTINGS  (Transformer pipeline)
-# ==================================================================
-# Sentence-BERT embedding model 
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-
-# NLI zero-shot model 
-ZEROSHOT_MODEL  = "typeform/distilbert-base-uncased-mnli"
-
-# Inference settings
-TRANSFORMER_BATCH_SIZE = 16    
-MAX_SEQ_LENGTH         = 128   
-
-# ==================================================================
-# ENSEMBLE SETTINGS  (Transformer pipeline)
-# ==================================================================
-
-STRATEGY         = "ensemble"
-ENSEMBLE_WEIGHTS = {"embedding": 0.45, "zeroshot": 0.55}
-
-# ==================================================================
-# WEIGHTS & BIASES SETTINGS
-# ==================================================================
-
-WANDB_PROJECT = "22f3001418-t22026"
-WANDB_RUN     = "transformer-embeddings-zeroshot"
-WANDB_TAGS    = ["transformer", "sentence-bert", "zero-shot", "map@3"]
-
-# W&B secret key name in Kaggle secrets
-WANDB_SECRET_KEY_NAME = "WANDB_API_KEY"
-
-print("Config loaded successfully for Kaggle Environment.")
-=======
-# updated config.py
 import os
 import torch
 import logging
@@ -161,8 +18,26 @@ FIGURE_DPI   = 150
 SAVE_PLOTS   = True
 OUTPUT_DIR   = "/kaggle/working/outputs"
 PLOT_DIR     = "/kaggle/working/outputs/plots"
-PREBUILT_TFIDF_MODEL_PATH = Path("/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026outputs/models/tfidf_vectorizer.pkl")
-PREBUILT_W2V_MODEL_PATH   = Path("/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026outputs/models/word2vec.model")
+
+# ─────────────────────────────────────────────
+# Pre-built model paths (module-level constants)
+# ─────────────────────────────────────────────
+PREBUILT_TFIDF_MODEL_PATH = Path(
+    "/kaggle/input/notebooks/mimakhdumiiitm/"
+    "dl-22f3001418-notebook-t22026/outputs/models/tfidf_vectorizer.pkl"
+)
+PREBUILT_W2V_MODEL_PATH = Path(
+    "/kaggle/input/notebooks/mimakhdumiiitm/"
+    "dl-22f3001418-notebook-t22026/outputs/models/word2vec.model"
+)
+
+# ─────────────────────────────────────────────
+# Artifact directory constants (module-level)
+# ─────────────────────────────────────────────
+ARTIFACTS_SAVE_DIR = Path("/kaggle/working/outputs/artifacts")
+ARTIFACTS_LOAD_DIR = Path(
+    "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/artifacts/"
+)
 
 
 # ─────────────────────────────────────────────
@@ -203,15 +78,32 @@ class Config:
     """
     Centralised configuration object.
     Instantiate once in main.py; pass the instance everywhere.
+
+    Covers:
+        • Milestones 1–3 : TF-IDF, Word2Vec, SBERT, Zero-shot NLI,
+                           Transformer embeddings, RAG, Ensemble
+        • Milestone 4    : DeBERTa fine-tuning with LoRA / PEFT
     """
 
     # ── Paths ──────────────────────────────────────────────────────
     data_dir      : Path = Path("/kaggle/input/competitions/smart-mcq-solver-challenge")
     output_dir    : Path = Path("/kaggle/working/outputs")
-    model_dir     : Path = Path("/kaggle/working/outputs/models")         
+    model_dir     : Path = Path("/kaggle/working/outputs/models")
     submission_dir: Path = Path("/kaggle/working/outputs/submissions")
-    processed_dir : Path = Path("/kaggle/working/outputs/processed_files")  
+    processed_dir : Path = Path("/kaggle/working/outputs/processed_files")
     plot_dir      : Path = Path("/kaggle/working/outputs/plots")
+
+    # ── Artifact directories (declared as proper dataclass fields) ──
+    # FIX: These were wrongly defined as class-level attributes before,
+    #      causing __post_init__ to fail with AttributeError.
+    artifacts_save_dir: Path = field(
+        default_factory=lambda: Path("/kaggle/working/outputs/artifacts")
+    )
+    artifacts_load_dir: Path = field(
+        default_factory=lambda: Path(
+            "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/artifacts/"
+        )
+    )
 
     # ── Raw file names ─────────────────────────────────────────────
     train_file: str = "train.csv"
@@ -239,24 +131,25 @@ class Config:
     sbert_model     : str = "all-MiniLM-L6-v2"
     sbert_batch_size: int = 64
 
-    # ── Fine-tuning (Phase 4 – placeholder) ───────────────────────
-    finetune_model              : str   = "microsoft/deberta-v3-small"
+    # ── Transformer fine-tuning ────────────────────────────────────
+    finetune_model              : str   = "microsoft/deberta-v3-base"
     max_length                  : int   = 512
     learning_rate               : float = 2e-5
     weight_decay                : float = 0.01
     num_epochs                  : int   = 3
     train_batch_size            : int   = 4
     eval_batch_size             : int   = 8
-    gradient_accumulation_steps : int   = 8
+    batch_size                  : int   = 16
+    gradient_accumulation_steps : int   = 4
     warmup_ratio                : float = 0.1
-    fp16                        : bool  = True
+    fp16                        : bool  = False
     gradient_checkpointing      : bool  = True
 
-    # ── LoRA ───────────────────────────────────────────────────────
-    lora_r             : int       = 16
-    lora_alpha         : int       = 32
-    lora_dropout       : float     = 0.1
-    lora_target_modules: List[str] = field(
+    # ── LoRA / PEFT (Milestone 4) ──────────────────────────────────
+    lora_r             : int   = 16
+    lora_alpha         : int   = 32
+    lora_dropout       : float = 0.1
+    lora_target_modules: Optional[List[str]] = field(
         default_factory=lambda: ["query_proj", "value_proj"]
     )
 
@@ -268,37 +161,80 @@ class Config:
     ensemble_temperature: float = 1.0
 
     # ── W&B ────────────────────────────────────────────────────────
-    wandb_project: str            = "22f3001418-t22026"
-    wandb_entity : Optional[str]  = None
-    use_wandb    : bool           = True
+    wandb_project: str           = "22f3001418-t22026"
+    wandb_entity : Optional[str] = None
+    use_wandb    : bool          = True
 
     # ── Hardware ───────────────────────────────────────────────────
     seed       : int  = 42
     num_workers: int  = 4
     pin_memory : bool = True
-    device     : str  = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
-    n_gpus     : int  = field(default_factory=torch.cuda.device_count)
+    device     : str  = field(
+        default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu"
+    )
+    n_gpus: int = field(default_factory=torch.cuda.device_count)
 
     # ── Persistence flags ──────────────────────────────────────────
-    # Set to False to force re-training even when cached files exist
     use_cached_models   : bool = True
     use_cached_processed: bool = True
 
+    # ── Zero-shot NLI model (Milestone 2-3) ───────────────────────
+    zs_model_key: str = "deberta-small"
+
+    # ── Transformer embedding model (Milestone 2-3) ───────────────
+    tr_model_key: str = "deberta"
+
+    # ──────────────────────────────────────────────────────────────
     def __post_init__(self) -> None:
         """Create all output directories; log hardware info."""
-        set_seed(self.seed)
-        dirs = [
-            self.output_dir, self.model_dir,
-            self.submission_dir, self.processed_dir, self.plot_dir,
-        ]
-        for d in dirs:
-            Path(d).mkdir(parents=True, exist_ok=True)
 
-        # Keep module-level constants in sync with the dataclass
+        # ── Normalise Path types ───────────────────────────────────
+        self.data_dir           = Path(self.data_dir)
+        self.output_dir         = Path(self.output_dir)
+        self.model_dir          = Path(self.model_dir)
+        self.submission_dir     = Path(self.submission_dir)
+        self.processed_dir      = Path(self.processed_dir)
+        self.plot_dir           = Path(self.plot_dir)
+        # FIX: Now safe because these are proper dataclass fields
+        self.artifacts_save_dir = Path(self.artifacts_save_dir)
+        self.artifacts_load_dir = Path(self.artifacts_load_dir)
+
+        # ── Normalise lora_target_modules ─────────────────────────
+        if self.lora_target_modules is not None and not isinstance(
+            self.lora_target_modules, list
+        ):
+            self.lora_target_modules = list(self.lora_target_modules)
+
+        # ── fp16: force-disable when no CUDA is available ─────────
+        if not torch.cuda.is_available():
+            if self.fp16:
+                logger.warning("No CUDA device found — disabling fp16.")
+            self.fp16 = False
+
+        # ── pin_memory: only meaningful with CUDA ─────────────────
+        if not torch.cuda.is_available():
+            self.pin_memory = False
+
+        # ── Seed ───────────────────────────────────────────────────
+        set_seed(self.seed)
+
+        # ── Create directories ─────────────────────────────────────
+        for d in [
+            self.output_dir,
+            self.model_dir,
+            self.submission_dir,
+            self.processed_dir,
+            self.plot_dir,
+            self.artifacts_save_dir,
+        ]:
+            d.mkdir(parents=True, exist_ok=True)
+
+        # ── Keep module-level constants in sync ────────────────────
         global OUTPUT_DIR, PLOT_DIR, SAVE_PLOTS
         OUTPUT_DIR = str(self.output_dir)
-        PLOT_DIR = str(self.plot_dir)
+        PLOT_DIR   = str(self.plot_dir)
 
+        # ── Hardware info ──────────────────────────────────────────
         logger.info(f"Device : {self.device}")
         logger.info(f"GPUs   : {self.n_gpus}")
         if torch.cuda.is_available():
@@ -307,40 +243,116 @@ class Config:
                 mem  = torch.cuda.get_device_properties(i).total_memory / 1e9
                 logger.info(f"  GPU {i}: {name} ({mem:.1f} GB)")
 
+        # ── Milestone 4 summary ────────────────────────────────────
+        logger.info(
+            f"Fine-tune backbone : {self.finetune_model}  "
+            f"(LoRA r={self.lora_r}, α={self.lora_alpha})"
+        )
+
     # ── Derived path helpers ───────────────────────────────────────
     def _resolve_model_path(self, prebuilt_path: Path, fallback_name: str) -> Path:
         """Prefer the prebuilt Kaggle input artifact when it exists."""
         if prebuilt_path.exists():
             return prebuilt_path
-        return Path(self.model_dir) / fallback_name
+        return self.model_dir / fallback_name
 
     @property
     def train_path(self) -> Path:
-        return Path(self.data_dir) / self.train_file
+        return self.data_dir / self.train_file
 
     @property
     def test_path(self) -> Path:
-        return Path(self.data_dir) / self.test_file
+        return self.data_dir / self.test_file
 
     @property
     def processed_train_path(self) -> Path:
-        return Path(self.processed_dir) / "train_processed.csv"
+        return self.processed_dir / "train_processed.csv"
 
     @property
     def processed_test_path(self) -> Path:
-        return Path(self.processed_dir) / "test_processed.csv"
+        return self.processed_dir / "test_processed.csv"
 
     @property
     def tfidf_model_path(self) -> Path:
-        return self._resolve_model_path(
-            PREBUILT_TFIDF_MODEL_PATH,
-            "tfidf_vectorizer.pkl",
-        )
+        return Path(PREBUILT_TFIDF_MODEL_PATH)
 
     @property
     def w2v_model_path(self) -> Path:
-        return self._resolve_model_path(
-            PREBUILT_W2V_MODEL_PATH,
-            "word2vec.model",
+        return Path(PREBUILT_W2V_MODEL_PATH)
+
+    # ── Milestone 4 convenience helpers ───────────────────────────
+    @property
+    def finetuned_model_path(self) -> Path:
+        """Where the fine-tuned / LoRA-adapted checkpoint is saved."""
+        return self.model_dir / "finetuned_deberta"
+
+    @property
+    def lora_adapter_path(self) -> Path:
+        """Where the LoRA adapter weights are saved (PEFT format)."""
+        return self.model_dir / "lora_adapter"
+
+    def effective_batch_size(self) -> int:
+        """
+        Logical batch size seen by the optimiser after gradient accumulation.
+        Useful for logging and LR-scaling decisions.
+        """
+        return self.train_batch_size * max(self.gradient_accumulation_steps, 1)
+
+    # ── Artifact helpers (*.npy) ───────────────────────────────────
+    def artifact_read_path(self, filename: str) -> Path:
+        """
+        Return the path from which a .npy artifact should be LOADED.
+
+        Priority:
+            1. Prebuilt Kaggle input artifact  (artifacts_load_dir / filename)
+            2. Locally saved artifact          (artifacts_save_dir / filename)
+
+        Raises FileNotFoundError if neither exists.
+        """
+        prebuilt = self.artifacts_load_dir / filename
+        if prebuilt.exists():
+            logger.info(f"[artifact] Loading prebuilt  → {prebuilt}")
+            return prebuilt
+
+        local = self.artifacts_save_dir / filename
+        if local.exists():
+            logger.info(f"[artifact] Loading local     → {local}")
+            return local
+
+        raise FileNotFoundError(
+            f"Artifact '{filename}' not found in either:\n"
+            f"  {prebuilt}\n  {local}"
         )
->>>>>>> milestone-1
+
+    def artifact_write_path(self, filename: str) -> Path:
+        """
+        Return the path to which a .npy artifact should be SAVED.
+        Always writes to artifacts_save_dir (local working directory).
+        """
+        dest = self.artifacts_save_dir / filename
+        logger.info(f"[artifact] Saving             → {dest}")
+        return dest
+
+    def save_artifact(self, array: "np.ndarray", filename: str) -> Path:
+        """
+        Save a numpy array as  artifacts_save_dir / filename.
+        Returns the path that was written.
+        """
+        dest = self.artifact_write_path(filename)
+        np.save(dest, array)
+        return dest
+
+    def load_artifact(self, filename: str) -> "np.ndarray":
+        """
+        Load a numpy array, preferring the prebuilt Kaggle artifact.
+        Raises FileNotFoundError if neither location has the file.
+        """
+        src = self.artifact_read_path(filename)
+        return np.load(src, allow_pickle=True)
+
+    def artifact_exists(self, filename: str) -> bool:
+        """True if the artifact is available from either location."""
+        return (
+            (self.artifacts_load_dir / filename).exists()
+            or (self.artifacts_save_dir / filename).exists()
+        )

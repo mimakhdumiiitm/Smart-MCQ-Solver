@@ -1,70 +1,69 @@
-# ensemble/fuser.py
-# Score-level fusion with min-max normalisation + optional weight search.
+# src/ensemble/fuser.py
+from __future__ import annotations
 
 import logging
 from typing import Dict, List, Optional, Tuple
+import numpy as np
+from src.evaluation.evaluator import MAPAtKEvaluator
 
 import numpy as np
 
-from src.evaluation.evaluator import MAPAtKEvaluator
-
-logger = logging.getLogger("ScoreFuser")
+logger = logging.getLogger(__name__)
 
 
 class ScoreFuser:
     """
-    Fuse score matrices from multiple rankers via weighted averaging.
+    Weighted average fusion of (n_samples, n_options) score matrices.
 
-    Score-level fusion is preferred over vote-level because it
-    preserves confidence magnitudes across models.
+    Parameters
+    ----------
+    weights : optional {model_name: float}
+        If None, equal weighting is applied.
     """
 
     def __init__(self, weights: Optional[Dict[str, float]] = None) -> None:
-        self.weights = weights   # None → equal weighting
+        self.weights = weights
 
-    # ─────────────────────────────────────────
-    # Core fusion
-    # ─────────────────────────────────────────
-
+    # ------------------------------------------------------------------
     @staticmethod
-    def normalise(scores: np.ndarray) -> np.ndarray:
-        """Row-wise min-max normalisation to [0, 1]."""
-        lo    = scores.min(axis=1, keepdims=True)
-        hi    = scores.max(axis=1, keepdims=True)
-        denom = np.where(hi - lo > 0, hi - lo, 1.0)
-        return (scores - lo) / denom
+    def normalize(scores: np.ndarray) -> np.ndarray:
+        """Per-sample min-max normalization → [0, 1]."""
+        mins = scores.min(axis=1, keepdims=True)
+        maxs = scores.max(axis=1, keepdims=True)
+        denom = np.where((maxs - mins) == 0, 1.0, maxs - mins)
+        return (scores - mins) / denom
 
+    # ------------------------------------------------------------------
     def fuse(self, score_dict: Dict[str, np.ndarray]) -> np.ndarray:
         """
-        Combine normalised score matrices.
-
         Parameters
         ----------
-        score_dict : {model_name: (n_samples, n_options) array}
+        score_dict : {model_name: (n_samples, n_options)}
 
         Returns
         -------
-        np.ndarray of shape (n_samples, n_options)
+        fused : (n_samples, n_options)
         """
-        if not score_dict:
-            raise ValueError("score_dict is empty.")
-
-        normed = {k: self.normalise(v) for k, v in score_dict.items()}
+        names = list(score_dict.keys())
 
         if self.weights is None:
-            return np.mean(list(normed.values()), axis=0)
+            w_arr = np.ones(len(names)) / len(names)
+        else:
+            w_arr = np.array(
+                [self.weights.get(n, 1.0) for n in names], dtype=float
+            )
+            w_arr /= w_arr.sum()
 
-        total  = sum(self.weights.values())
-        result = np.zeros_like(next(iter(normed.values())))
-        for name, arr in normed.items():
-            w = self.weights.get(name, 1.0) / total
-            result += w * arr
-        return result
+        fused = np.zeros_like(
+            next(iter(score_dict.values())), dtype=float
+        )
+        for w, name in zip(w_arr, names):
+            fused += w * self.normalize(score_dict[name])
 
-    # ─────────────────────────────────────────
+        return fused
+
+     # ─────────────────────────────────────────
     # Grid-search for best weights
-    # ─────────────────────────────────────────
-
     @staticmethod
     def grid_search(
         score_dict  : Dict[str, np.ndarray],
