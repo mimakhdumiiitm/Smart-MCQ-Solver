@@ -434,7 +434,7 @@ def run_milestone5(
 
     val_labels: List[str] = val_df[answer_col].tolist()
 
-    load_dir = Path(cfg.ARTIFACTS_LOAD_DIR)
+    load_dir = Path(cfg.artifacts_load_dir) 
 
     ensemble_val_file = load_dir / "ensemble_val.npy"
     ensemble_test_file = load_dir / "ensemble_test.npy"
@@ -524,7 +524,7 @@ def run_milestone5(
 
     # ── 5. Persist ensemble score matrices ────────────────────────────────
     artifact_dir = Path(
-        getattr(cfg, "ARTIFACTS_SAVE_DIR", getattr(cfg, "output_dir"))
+        getattr(cfg, "artifacts_save_dir", getattr(cfg, "output_dir"))
     )
     artifact_dir.mkdir(parents=True, exist_ok=True)
 

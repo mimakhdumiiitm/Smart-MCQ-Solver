@@ -72,33 +72,6 @@ def run_milestone3(
     retrieval_model: str = "all-mpnet-base-v2",
     top_k: int = 5,
 ) -> Dict[str, Any]:
-    """
-    Execute the full Milestone 3 RAG pipeline.
-
-    Artefact loading priority
-    -------------------------
-    1. ``cfg.kaggle_artifacts_dir``  – pre-computed artefacts from a previous
-                                       Kaggle notebook run (read-only mount).
-    2. ``cfg.output_dir``            – artefacts saved by a previous local run.
-    3. Compute from scratch and save to ``cfg.output_dir``.
-
-    Parameters
-    ----------
-    train_df        : full training DataFrame (used as retrieval corpus)
-    val_df          : validation split
-    test_df         : test DataFrame
-    retrieval_model : Sentence-BERT model name for FAISS index
-    top_k           : neighbours to retrieve per query
-
-    Returns
-    -------
-    results dict with keys:
-        "rag_vote_val", "rag_vote_test",
-        "rag_semantic_val", "rag_semantic_test",
-        "rag_combined_val", "rag_combined_test",
-        "val_contexts", "test_contexts", "train_contexts",
-        "metrics"  (ablation MAP@3 values)
-    """
     from config.config import Config
     cfg = Config()
 
@@ -106,21 +79,15 @@ def run_milestone3(
     evaluator = _Evaluator()
 
     option_cols = cfg.options
-    out         = cfg.output_dir
+    out = cfg.artifacts_save_dir
     results: Dict[str, Any] = {"metrics": {}}
 
     # ── Step 1: Resolve artefact source ──────────────────────────────────────
-    #
-    #   Priority:
-    #     (a) Kaggle read-only mount   → cfg.kaggle_artifacts_dir
-    #     (b) Local output dir cache   → cfg.output_dir
-    #     (c) Compute from scratch
-    #
     artefacts: Optional[Dict[str, np.ndarray]] = None
     artefact_source: str = "compute"
 
     # (a) Check Kaggle artifacts directory (configured, not hardcoded here)
-    kaggle_dir: Optional[Path] = getattr(cfg, "kaggle_artifacts_dir", None)
+    kaggle_dir = cfg.artifacts_load_dir
     if kaggle_dir is not None:
         artefacts = _try_load_from_dir(kaggle_dir)
         if artefacts is not None:

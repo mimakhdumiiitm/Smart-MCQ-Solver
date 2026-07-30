@@ -414,7 +414,7 @@ def _train_and_predict(
     )
 
     # ── save logits ───────────────────────────────────────────────────────────
-    out = cfg.output_dir
+    out = cfg.artifacts_save_dir
     out.mkdir(parents=True, exist_ok=True)
     np.save(out / f"{model_key}_val_logits.npy",  val_logits)
     np.save(out / f"{model_key}_test_logits.npy", test_logits)
@@ -623,7 +623,7 @@ def run_milestone4(
     cfg.finetune_model = primary_model
 
     results: Dict[str, Any] = {"metrics": {}}
-    out = cfg.output_dir
+    out = cfg.artifacts_save_dir
 
     # ── extract contexts from M3 ──────────────────────────────────────────────
     train_contexts: List[str] = m3_results.get("train_contexts", [""] * len(train_df))
@@ -634,11 +634,12 @@ def run_milestone4(
     artefacts: Optional[Dict[str, np.ndarray]] = None
     artefact_source = "compute"
 
-    kaggle_dir: Optional[Path] = getattr(cfg, "kaggle_artifacts_dir", None)
-    if kaggle_dir is not None:
-        artefacts = _try_load_artefacts(kaggle_dir)
+    load_dir = getattr(cfg, "artifacts_load_dir", None)
+
+    if load_dir is not None:
+        artefacts = _try_load_artefacts(load_dir)
         if artefacts:
-            artefact_source = f"kaggle_artifacts ({kaggle_dir})"
+            artefact_source = f"kaggle_artifacts ({load_dir})"
 
     if artefacts is None and _all_cached(out):
         artefacts = _try_load_artefacts(out)

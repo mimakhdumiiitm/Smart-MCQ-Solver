@@ -31,11 +31,11 @@ logger = logging.getLogger(__name__)
 # Priority artifact directory – checked FIRST before any other path
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Ordered list of artifact roots to probe (highest priority first).
+from config.config import Config
+cfg = Config()
+
 _ARTIFACT_ROOTS: List[Path] = [
-    Path("/kaggle/input/notebooks/mimakhdumiiitm"
-         "/dl-22f3001418-notebook-t22026/outputs"),
-    Path("/kaggle/input/project-artifacts/outputs"),
+    cfg.artifacts_load_dir,
 ]
 
 
@@ -629,12 +629,13 @@ def run_milestone2(
     val_df, test_df = _auto_load_data(cfg, val_df, test_df)
     logger.info(f"[M2] val={len(val_df)} rows | test={len(test_df)} rows")
 
-    out                = cfg.output_dir
+    artifact_dir = cfg.artifacts_save_dir
+    artifact_dir.mkdir(parents=True, exist_ok=True)
     results            : Dict[str, Any]  = {"metrics": {}}
     all_method_metrics : Dict[str, dict] = {}
 
     # ── 3. Phase-1 baseline scores ────────────────────────────────────────────
-    baseline_scores = _load_baseline_scores(out, baseline_scores)
+    baseline_scores = _load_baseline_scores(artifact_dir, baseline_scores)
 
     # ─────────────────────────────────────────────────────────────────────────
     # RUN 1 : Zero-Shot NLI
@@ -659,8 +660,8 @@ def run_milestone2(
     )
 
     try:
-        zs_val_path  = out / "zs_val_scores.npy"
-        zs_test_path = out / "zs_test_scores.npy"
+        zs_val_path  = artifact_dir / "zs_val_scores.npy"
+        zs_test_path = artifact_dir / "zs_test_scores.npy"
 
         cached = _load_scores_with_artifact_fallback(
             local_val_path         = zs_val_path,
@@ -680,7 +681,7 @@ def run_milestone2(
             )
             np.save(zs_val_path,  zs_val_scores)
             np.save(zs_test_path, zs_test_scores)
-            logger.info(f"[M2] Zero-shot scores saved → {out}")
+            logger.info(f"[M2] Zero-shot scores saved → {artifact_dir}")
             _wandb_log(zs_run, {"cache_hit": False})
 
         zs_metrics         = _compute_metrics(zs_val_scores, val_df, option_cols)
@@ -728,8 +729,8 @@ def run_milestone2(
     )
 
     try:
-        tr_val_path  = out / "transformer_val_scores.npy"
-        tr_test_path = out / "transformer_test_scores.npy"
+        tr_val_path  = artifact_dir / "transformer_val_scores.npy"
+        tr_test_path = artifact_dir / "transformer_test_scores.npy"
 
         cached = _load_scores_with_artifact_fallback(
             local_val_path         = tr_val_path,
@@ -749,7 +750,7 @@ def run_milestone2(
             )
             np.save(tr_val_path,  transformer_val_scores)
             np.save(tr_test_path, transformer_test_scores)
-            logger.info(f"[M2] Transformer scores saved → {out}")
+            logger.info(f"[M2] Transformer scores saved → {artifact_dir}")
             _wandb_log(tr_run, {"cache_hit": False})
 
         tr_metrics         = _compute_metrics(transformer_val_scores, val_df, option_cols)
