@@ -57,7 +57,9 @@ outputs/models/*.onnx
 outputs/models/*.model
 
 # Outputs
-outputs/
+outputs/*
+!outputs/plots/
+!outputs/plots/**
 submissions/
 wandb/
 logs/
@@ -69,7 +71,6 @@ tmp/
 # Editor swap files
 *.swp
 
-<<<<<<< HEAD
 # Python build files
 build/
 dist/
@@ -78,7 +79,7 @@ dist/
 outputs/processed_files
 
 kaggle_outputs/
-=======
+
 # Qodo
 .qodo/
->>>>>>> Milestone-1
+
