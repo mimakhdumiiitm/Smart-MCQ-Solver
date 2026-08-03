@@ -41,22 +41,33 @@ def _plot(history, max_sims, wandb_run):
         plt.figure(figsize=(6,4))
         plt.hist(max_sims, bins=50)
         plt.title("Train-Val Similarity")
+        plt.xlabel("Maximum cosine similarity")
+        plt.ylabel("Count")
         plt.show()
 
     # Training curves
     if history and "tr_loss" in history:
+
         ep = range(1, len(history["tr_loss"]) + 1)
 
-        fig, ax = plt.subplots(1,3, figsize=(15,4))
+        fig, ax = plt.subplots(1, 3, figsize=(15,4))
 
+        # Loss
         ax[0].plot(ep, history["tr_loss"], label="Train")
-        ax[0].plot(ep, history["va_loss"], label="Val")
+        ax[0].plot(ep, history["vl_loss"], label="Validation")
+        ax[0].set_title("Loss")
         ax[0].legend()
 
-        ax[1].plot(ep, history["va_map"])
+        # MAP@3
+        ax[1].plot(ep, history["vl_map3"])
+        ax[1].set_title("Validation MAP@3")
 
+        # Accuracy
+        ax[2].plot(ep, history["vl_acc"])
+        ax[2].set_title("Validation Accuracy")
+
+        plt.tight_layout()
         plt.show()
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 
