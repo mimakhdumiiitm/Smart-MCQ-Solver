@@ -19,6 +19,7 @@ from src.BiLSTM.artifacts import (try_load, save_dedup, load_dedup,
                        _DEDUP, _VOCAB)
 
 from utils.wandb_init import init_wandb, log_model_metrics, finish_run
+import matplotlib.pyplot as plt
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,44 +35,27 @@ def _load(path: str):
 
 
 def _plot(history, max_sims, wandb_run):
-    """Inline plotting — not worth a separate file."""
-    try:
-        import matplotlib.pyplot as plt
 
-        # training curves
-        ep = range(1, len(history['tr_loss']) + 1)
-        fig, ax = plt.subplots(1, 3, figsize=(15, 4))
-        ax[0].plot(ep, history['tr_loss'], label='Train')
-        ax[0].plot(ep, history['vl_loss'], label='Val')
-        ax[0].set_title('Loss'); ax[0].legend(); ax[0].grid(alpha=.3)
-        ax[1].plot(ep, history['vl_map3'], color='green')
-        ax[1].set_title('Val MAP@3'); ax[1].grid(alpha=.3)
-        ax[2].plot(ep, history['vl_acc'],  color='purple')
-        ax[2].set_title('Val Acc'); ax[2].grid(alpha=.3)
-        plt.tight_layout()
-        plt.savefig('training_curves.png', dpi=150)
-        if wandb_run:
-            import wandb
-            wandb_run.log({"training_curves": wandb.Image('training_curves.png')})
+    # Similarity histogram
+    if max_sims is not None:
+        plt.figure(figsize=(6,4))
+        plt.hist(max_sims, bins=50)
+        plt.title("Train-Val Similarity")
         plt.show()
 
-        # sim distribution
-        plt.figure(figsize=(8, 4))
-        plt.hist(max_sims, bins=50, color='steelblue', edgecolor='white')
-        plt.axvline(0.85, color='red',    ls='--', label='threshold=0.85')
-        plt.axvline(float(np.median(max_sims)), color='orange', ls='--',
-                    label=f'median={np.median(max_sims):.3f}')
-        plt.xlabel('Cosine similarity (val→train)')
-        plt.title('Train–Val Similarity Distribution')
-        plt.legend(); plt.tight_layout()
-        plt.savefig('sim_distribution.png', dpi=150)
-        if wandb_run:
-            wandb_run.log({"sim_distribution":
-                           wandb.Image('sim_distribution.png')})
-        plt.show()
+    # Training curves
+    if history and "tr_loss" in history:
+        ep = range(1, len(history["tr_loss"]) + 1)
 
-    except ImportError:
-        logger.warning("matplotlib not available — skipping plots")
+        fig, ax = plt.subplots(1,3, figsize=(15,4))
+
+        ax[0].plot(ep, history["tr_loss"], label="Train")
+        ax[0].plot(ep, history["va_loss"], label="Val")
+        ax[0].legend()
+
+        ax[1].plot(ep, history["va_map"])
+
+        plt.show()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
