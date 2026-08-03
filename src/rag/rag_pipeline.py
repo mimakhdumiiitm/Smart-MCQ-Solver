@@ -322,3 +322,37 @@ class RAGPipeline:
             contexts.append(" | ".join(parts))
 
         return contexts
+
+
+"""
+             Question
+                 │
+                 ▼
+        Convert into vector (sentence BERT)
+                 │
+                 ▼
+      Search similar vectors (FAISS indexing)
+          (using FAISS)
+                 │
+                 ▼
+     Retrieve similar questions
+                 │
+                 ▼
+    Use retrieved information
+                 │
+                 ▼
+     Predict final answer
+
+2 types of scoring
+
+1. rag score - we have qeusions with their answers and similariy score 
+Q1 → Answer = A → Similarity = 0.95
+Q2 → Answer = A → Similarity = 0.92
+Q3 → Answer = A → Similarity = 0.90
+Option A
+0.95 + 0.92 + 0.90
+= 2.77
+
+2. semantic score - we have questions with their answers and similariy score
+mean vector of all the answers of the retrieved questions and now check similarity of the mean vector with the options of the current question
+"""

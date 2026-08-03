@@ -1,8 +1,4 @@
 # models/tfidf_ranker.py
-# TF-IDF cosine-similarity ranker with pickle-based persistence.
-# On first run: fits the vectorizer and saves it.
-# On subsequent runs: loads from disk — no re-training.
-
 import logging
 from pathlib import Path
 from typing import List, Optional
@@ -17,16 +13,6 @@ logger = logging.getLogger("TFIDFRanker")
 
 
 class TFIDFRanker:
-    """
-    Rank MCQ options by TF-IDF cosine similarity with the question.
-
-    Persistence
-    -----------
-    * `save()` — serialises the fitted vectorizer to a .pkl file.
-    * `load()` — deserialises it; returns True on success.
-    * `fit_or_load()` — convenience: tries to load first, fits if missing.
-    """
-
     def __init__(self, config: Config) -> None:
         self.cfg = config
         self.vectorizer = TfidfVectorizer(
@@ -43,7 +29,6 @@ class TFIDFRanker:
     # ─────────────────────────────────────────
     # Persistence
     # ─────────────────────────────────────────
-
     def save(self, path: Optional[Path] = None) -> None:
         """Pickle the fitted TfidfVectorizer."""
         target = Path(path or self.cfg.tfidf_model_path)
@@ -70,15 +55,7 @@ class TFIDFRanker:
     # ─────────────────────────────────────────
     # Fit / fit-or-load
     # ─────────────────────────────────────────
-
     def fit(self, df) -> "TFIDFRanker":
-        """
-        Fit on the full corpus (prompts + all options).
-
-        Parameters
-        ----------
-        df : preprocessed DataFrame with *_clean columns.
-        """
         option_cols = [c for c in self.cfg.options if c in df.columns]
         corpus      = df["prompt_clean"].tolist()
         for opt in option_cols:
@@ -95,14 +72,7 @@ class TFIDFRanker:
         return self
 
     def fit_or_load(self, df) -> "TFIDFRanker":
-        """
-        Load a cached model when `config.use_cached_models` is True
-        and the file exists; otherwise fit from scratch and save.
 
-        Usage
-        -----
-            ranker.fit_or_load(train_df)
-        """
         if self.cfg.use_cached_models and self.load():
             return self
         return self.fit(df)
@@ -147,3 +117,20 @@ class TFIDFRanker:
         return evaluator.scores_to_top_k_predictions(
             self.predict_scores(df), option_cols
         )
+
+"""
+information retrieval technique ---> ranks documents (or text) based on how similar they are to a query.
+step 1 - Preprocessing 
+Step 2 -  Build Vovabulary
+Step 3 -  Calculate Term Frquencey - TF = Count of word in document / Total number of words in document
+Step 4 - Calculate Inverse Document Frequency - IDF = log(Total number of documents / Number of documents containing the word)
+Step 5 - Calculate TF-IDF = TF * IDF
+Step 6 - Calculate Cosine Similarity between the prompt and each option
+Step 7 - Rank the answer options based on their cosine similarity scores.
+
+problems :
+x Understands meaning
+x Word order
+x Sentence embedding
+x Pretrained knowledge
+"""

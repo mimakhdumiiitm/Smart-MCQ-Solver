@@ -35,19 +35,7 @@ The following preprocessing and exploratory steps were completed:
 
 ---
 
-## 2. Inter-Option Similarity Heatmap
-
-*No matching plot image was generated in the latest outputs/plots directory for this section.*
-
-**Observation**
-
-* Displays cosine similarity between answer option texts.
-* Diagonal values are close to **1.0**, indicating self-similarity.
-* Off-diagonal similarities (~0.58–0.61) show that different answer options often share similar vocabulary.
-
----
-
-## 3. MAP@3 Comparison
+## 2. MAP@3 Comparison
 
 ![MAP Comparison](../outputs/plots/map_comparison.png)
 
@@ -59,31 +47,7 @@ The following preprocessing and exploratory steps were completed:
 
 ---
 
-## 4. Mean TF-IDF Similarity per Option
-
-*No matching plot image was generated in the latest outputs/plots directory for this section.*
-
-**Observation**
-
-* Average prompt-option cosine similarity is very similar across all answer choices.
-* Options **A** and **C** have marginally higher similarity.
-* TF-IDF alone provides little discrimination between correct and incorrect answers.
-
----
-
-## 5. Mean Word2Vec Similarity per Option
-
-*No matching plot image was generated in the latest outputs/plots directory for this section.*
-
-**Observation**
-
-* Word2Vec produces generally higher similarity scores than TF-IDF.
-* Option **E** has the highest average similarity.
-* Differences between options remain small, limiting predictive usefulness.
-
----
-
-## 6. Rank Distribution
+## 3. Rank Distribution
 
 ![Rank Distribution](../outputs/plots/rank_distribution.png)
 
@@ -95,7 +59,7 @@ The following preprocessing and exploratory steps were completed:
 
 ---
 
-## 7. Text Length Distribution
+## 4. Text Length Distribution
 
 ![Text Length Distribution](../outputs/plots/text_length_distributions.png)
 
@@ -107,7 +71,7 @@ The following preprocessing and exploratory steps were completed:
 
 ---
 
-## 8. Most Frequent Prompt Words
+## 5. Most Frequent Prompt Words
 
 ![Top Prompt Words](../outputs/plots/top_prompt_words.png)
 
@@ -127,28 +91,8 @@ The following preprocessing and exploratory steps were completed:
 
 ---
 
-## 9. Most Frequent Option Words
 
-*No matching plot image was generated in the latest outputs/plots directory for this section.*
-
-**Observation**
-
-* Frequently occurring words include:
-
-  * energy
-  * temperature
-  * particle
-  * mass
-  * density
-  * law
-  * rotation
-  * surface
-
-* The options are largely composed of scientific and technical terminology.
-
----
-
-## 10. Word2Vec PCA Visualization
+## 6. Word2Vec PCA Visualization
 
 ![Word2Vec PCA](../outputs/plots/w2v_pca.png)
 
@@ -160,7 +104,7 @@ The following preprocessing and exploratory steps were completed:
 
 ---
 
-## 11. TF-IDF Similarity Distribution
+## 7. TF-IDF Similarity Distribution
 
 ![TF-IDF Similarity Distribution](../outputs/plots/tfidf_similarity_dist.png)
 
@@ -172,7 +116,7 @@ The following preprocessing and exploratory steps were completed:
 
 ---
 
-## 12. Word2Vec Similarity Distribution
+## 8. Word2Vec Similarity Distribution
 
 ![Word2Vec Similarity Distribution](../outputs/plots/sbert_similarity_dist.png)
 

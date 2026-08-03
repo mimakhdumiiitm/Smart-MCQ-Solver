@@ -140,3 +140,13 @@ class SBERTRanker:
         """Load a previously saved embedding dict."""
         path = Path(self.cfg.model_dir) / filename
         return load_pickle(path)
+
+
+"""
+-- understand contexual meaning 
+-- build on top of BERT 
+-- gives embedding for each sentence
+-- internnal working - each word has embedding, then it is passed through transformer layers to get contextual embedding for each word, then pooling is done to get sentence embedding
+-- cosine similarity is used to compare embeddings of prompt and options
+-- Normalization is done to get cosine similarity as dot product
+"""

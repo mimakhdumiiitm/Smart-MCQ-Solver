@@ -1065,3 +1065,31 @@ class MCQFineTuner:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         self._logger.info("MCQFineTuner: GPU memory released.")
+
+
+"""
+Zero shot DeBERT :
+--- Use NLI - model is given 2 sentence must determine relationship between them
+-----Premise and Hypothesis
+-----3 classes = entailment, contradiction, neutral
+---- 3 logits = CLS Vector x weight + Bias 
+----- logits converted into probability using softmax
+
+| Model                              | Base Architecture | Parameters (Approx.) |  Speed  |  Memory |  Accuracy |
+| ---------------------------------- | ----------------- | -------------------: | :-----: | :-----: | :-------: |
+| cross-encoder/nli-deberta-v3-small | DeBERTa V3 Small  |               80–90M |   Fast  |   Low   |    Good   |
+| cross-encoder/nli-roberta-base     | RoBERTa Base      |                 125M |  Medium |  Medium | Very Good |
+| cross-encoder/nli-deberta-v3-base  | DeBERTa V3 Base   |                 180M | Slowest | Highest |    Best   |
+
+"""
+
+
+"""
+Transformer Embedding Ranker:
+ -- sentence -> tokens -> token ids
+ -- token ids -> embedding vector 
+ -- word embedding = word embedding + positional embedding
+ -- transfomer layer : word embedding -> contexual embedding 
+-- token vectores into senetence embedding
+-- L2 norm euclidnean distance 
+"""

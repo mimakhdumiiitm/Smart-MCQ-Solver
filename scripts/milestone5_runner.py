@@ -145,12 +145,12 @@ def _load_all_scores(
             "sbert_test_scores.npy",
         ),
 
-        # Choose ONE of these depending on the RAG output you want
+        # need to choose any one 
 
-        "rag_semantic": (
-            "rag_semantic_val.npy",
-            "rag_semantic_test.npy",
-        ),
+        # "rag_semantic": (
+        #     "rag_semantic_val.npy",
+        #     "rag_semantic_test.npy",
+        # ),
 
         # OR
 
@@ -548,3 +548,44 @@ def run_milestone5(
     print(sep)
 
     return results
+
+
+"""
+TF-IDF Scores
+        │
+Word2Vec Scores
+        │
+SBERT Scores
+        │
+Transformer Scores
+        │
+────────▼────────
+Load All Scores
+        │
+        ▼
+Normalize Scores
+        │
+        ▼
+Try 3 Ensemble Methods
+        │
+ ┌──────┼─────────┐
+ ▼      ▼         ▼
+Weighted Rank   Soft
+ Score  Average Vote
+ └──────┼─────────┘
+        ▼
+Calculate MAP@3
+        ▼
+Choose Best Method  | EnsembleOrchestrator | method with highest MAP@3 
+        ▼
+Save Ensemble Scores
+        ▼
+Log Results to W&B
+        ▼
+Final Top-3 MCQ Predictions
+
+
+for weighted score gridsearch used 
+temprature scaling - uniformity among scores new score = score / T
+soft voting -  avg of softmax probabilities of scores of each model 
+"""

@@ -160,3 +160,19 @@ class Word2VecRanker:
             if t in self.model.wv
         ]
         return np.mean(vecs, axis=0) if vecs else np.zeros(self.cfg.w2v_vector_size)
+
+
+"""
+neural network-based technique ---> converts words into vectors
+-- Each Word converted to a vector based  on nearby words 
+--- 1. CBOW (Chain of Bag of words) :  predicts missing word
+--- 2. Skip Gram : predicts nearby words based on a given word
+-- word vector --> senetence vector : mean pooling
+-- cosine similarity between sentence vectors of prompt and options
+
+problems :
+x Understands meaning
+x Word order
+x Sentence embedding
+x Pretrained knowledge
+"""
