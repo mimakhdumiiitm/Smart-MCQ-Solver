@@ -176,7 +176,6 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
     sub = None
     if test_path:
         import pandas as pd
-        from data import MCQDataset, collate_fn
         model.eval()
         test_raw = _load(test_path)
         ds = MCQDataset(test_raw, vocab, cfg.max_len, is_test=True)
