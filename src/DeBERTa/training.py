@@ -231,7 +231,7 @@ class Trainer:
                     "val/recall"    : rec,
                     "val/f1"        : f1,
                     "lr"            : lr,
-                }, step=ep)
+                })
 
             if self._early_stop(m3):
                 logger.info(f"Early stop at epoch {ep}")

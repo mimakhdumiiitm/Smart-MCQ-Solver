@@ -241,7 +241,8 @@ def run(train_path: str,
     ], weight_decay=cfg.weight_decay)
 
     # total optimizer steps (accounting for grad accumulation)
-    total_steps  = (len(train_dl) // cfg.grad_accum_steps) * cfg.epochs
+    import math
+    total_steps = math.ceil(len(train_dl) / cfg.grad_accum_steps) * cfg.epochs
     warmup_steps = int(total_steps * cfg.warmup_ratio)
 
     sched = get_linear_schedule_with_warmup(
