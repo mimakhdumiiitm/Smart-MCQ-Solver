@@ -141,7 +141,11 @@ class MCQDeBERTa(nn.Module):
             attention_probs_dropout_prob = hidden_dropout,
             output_hidden_states         = False,
         )
-        self.encoder = AutoModel.from_pretrained(model_name, config=cfg)
+        self.encoder = AutoModel.from_pretrained(
+            model_name,
+            config=cfg,
+            torch_dtype=torch.float32,
+        )
 
         if use_grad_ckpt:
             self.encoder.gradient_checkpointing_enable()
