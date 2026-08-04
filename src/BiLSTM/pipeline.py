@@ -117,7 +117,7 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
 
     # ── W&B ──────────────────────────────────────────────────────────────────
     wandb_run = init_wandb(
-    config=cfg_dict,
+    config=Config,
     run_name="BiLSTM",
     model_name="BiLSTM",
     group="scratch-models",
