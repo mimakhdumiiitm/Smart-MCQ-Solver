@@ -106,91 +106,165 @@ class Trainer:
 
     def _train_epoch(self) -> float:
         self.model.train()
-        tot_loss  = 0.0
-        n_steps   = 0
+
+        tot_loss = 0.0
+        n_steps = 0
 
         self.opt.zero_grad()
 
         for step, batch in enumerate(self.train_dl):
-            ids    = batch['input_ids']     .to(self.device)
-            mask   = batch['attention_mask'].to(self.device)
-            labels = batch['label']         .to(self.device)
 
-            # ── forward under autocast ────────────────────────────────────────
+            ids    = batch["input_ids"].to(self.device)
+            mask   = batch["attention_mask"].to(self.device)
+            labels = batch["label"].to(self.device)
+
             with self._autocast():
-                logits = self.model(ids, mask)
-                # logits is fp32 (head forces it) — loss is always fp32
-                loss, *_ = self.loss_fn(logits, labels)
 
-            # ── scale for accumulation and backward ───────────────────────────
+                logits = self.model(ids, mask)
+
+                print("\n" + "=" * 80)
+                print(f"Training Batch {step}")
+                print("=" * 80)
+
+                print("Logits shape :", tuple(logits.shape))
+                print("Logits dtype :", logits.dtype)
+                print("Labels dtype :", labels.dtype)
+                print("Labels shape :", tuple(labels.shape))
+                print("Unique labels:", torch.unique(labels).cpu().tolist())
+
+                print("NaN logits :", torch.isnan(logits).any().item())
+                print("Inf logits :", torch.isinf(logits).any().item())
+
+                if not torch.isnan(logits).any():
+                    print("Logits min :", logits.min().item())
+                    print("Logits max :", logits.max().item())
+                    print("Sample logits:\n", logits[:2].detach().cpu())
+
+                loss, ce_loss, rank_loss = self.loss_fn(logits, labels)
+
+                print("CrossEntropy :", ce_loss)
+                print("Ranking loss :", rank_loss)
+                print("Total loss   :", loss.item())
+                print("NaN loss     :", torch.isnan(loss).item())
+                print("Inf loss     :", torch.isinf(loss).item())
+
+                if torch.isnan(loss) or torch.isinf(loss):
+                    raise RuntimeError("Training loss became NaN/Inf")
+
             (loss / self.grad_accum).backward()
 
-            # ── collect loss BEFORE zero_grad (it's a scalar, safe) ───────────
-            # Use .detach().item() to ensure no autocast context leaks
+            # Check gradients
+            for name, param in self.model.named_parameters():
+                if param.grad is not None:
+                    if torch.isnan(param.grad).any():
+                        print(f"NaN gradient detected in: {name}")
+                        raise RuntimeError("NaN gradient")
+                    if torch.isinf(param.grad).any():
+                        print(f"Inf gradient detected in: {name}")
+                        raise RuntimeError("Inf gradient")
+
             loss_val = loss.detach().float().item()
 
             is_accum_boundary = (step + 1) % self.grad_accum == 0
-            is_last_batch     = (step + 1) == len(self.train_dl)
+            is_last_batch = (step + 1) == len(self.train_dl)
 
             if is_accum_boundary or is_last_batch:
-                # clip raw fp32 gradients — no scaler needed
-                nn.utils.clip_grad_norm_(
+
+                grad_norm = nn.utils.clip_grad_norm_(
                     self.model.parameters(),
-                    self.cfg.get('max_grad_norm', 1.0))
+                    self.cfg.get("max_grad_norm", 1.0),
+                )
+
+                print("Gradient norm:", grad_norm)
+
                 self.opt.step()
 
-                # OneCycleLR steps per optimizer step, not per epoch
-                if isinstance(self.sched,
-                              torch.optim.lr_scheduler.OneCycleLR):
+                if isinstance(self.sched, torch.optim.lr_scheduler.OneCycleLR):
                     self.sched.step()
 
                 self.opt.zero_grad()
 
             tot_loss += loss_val
-            n_steps  += 1
+            n_steps += 1
+
+            # Only inspect the first batch
+            break
 
         return tot_loss / max(n_steps, 1)
-
     # ── validation ────────────────────────────────────────────────────────────
 
     @torch.no_grad()
     def _validate(self):
         self.model.eval()
+
         tot_loss = 0.0
-        n_steps  = 0
+        n_steps = 0
+
         all_preds, all_labels = [], []
         all_pred_idx, all_label_idx = [], []
 
-        for batch in self.val_dl:
-            ids    = batch['input_ids']     .to(self.device)
-            mask   = batch['attention_mask'].to(self.device)
-            labels = batch['label']         .to(self.device)
+        for batch_idx, batch in enumerate(self.val_dl):
 
-            # ── wrap validation in same autocast ──────────────────────────────
+            ids    = batch["input_ids"].to(self.device)
+            mask   = batch["attention_mask"].to(self.device)
+            labels = batch["label"].to(self.device)
+
             with self._autocast():
+
                 logits = self.model(ids, mask)
-                loss, *_ = self.loss_fn(logits, labels)
+
+                print("\n" + "=" * 80)
+                print(f"Validation Batch {batch_idx}")
+                print("=" * 80)
+
+                print("Logits shape :", tuple(logits.shape))
+                print("Logits dtype :", logits.dtype)
+                print("Labels dtype :", labels.dtype)
+                print("Labels shape :", tuple(labels.shape))
+                print("Unique labels:", torch.unique(labels).cpu().tolist())
+
+                print("NaN logits :", torch.isnan(logits).any().item())
+                print("Inf logits :", torch.isinf(logits).any().item())
+
+                if not torch.isnan(logits).any():
+                    print("Logits min :", logits.min().item())
+                    print("Logits max :", logits.max().item())
+                    print("Sample logits:\n", logits[:2].detach().cpu())
+
+                loss, ce_loss, rank_loss = self.loss_fn(logits, labels)
+
+                print("CrossEntropy :", ce_loss)
+                print("Ranking loss :", rank_loss)
+                print("Total loss   :", loss.item())
+                print("NaN loss     :", torch.isnan(loss).item())
+                print("Inf loss     :", torch.isinf(loss).item())
+
+                if torch.isnan(loss) or torch.isinf(loss):
+                    raise RuntimeError("Validation loss became NaN/Inf")
 
             loss_val = loss.detach().float().item()
 
             pred_idx = logits.argmax(dim=1)
-            all_pred_idx .extend(pred_idx.cpu().numpy())
-            all_label_idx.extend(labels  .cpu().numpy())
+
+            all_pred_idx.extend(pred_idx.cpu().numpy())
+            all_label_idx.extend(labels.cpu().numpy())
 
             tot_loss += loss_val
-            n_steps  += 1
+            n_steps += 1
 
-            all_preds  += ranked_preds(logits)
+            all_preds += ranked_preds(logits)
             all_labels += [ANSWER_LABELS[l.item()] for l in labels]
 
-        m3        = map_at_3(all_preds, all_labels)
-        acc       = accuracy_score(all_label_idx, all_pred_idx)
+        m3 = map_at_3(all_preds, all_labels)
+        acc = accuracy_score(all_label_idx, all_pred_idx)
         prec, rec, f1, _ = precision_recall_fscore_support(
-            all_label_idx, all_pred_idx,
-            average='macro', zero_division=0)
+            all_label_idx,
+            all_pred_idx,
+            average="macro",
+            zero_division=0,
+        )
 
         return tot_loss / max(n_steps, 1), m3, acc, prec, rec, f1
-
     # ── main training loop ────────────────────────────────────────────────────
 
     def train(self) -> dict:
