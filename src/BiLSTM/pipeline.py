@@ -38,7 +38,7 @@ def _load(path: str):
     return pd.read_csv(path) if path.endswith('.csv') else pd.read_json(path)
 
 
-def _plot(history: dict, max_sims: np.ndarray, wandb_run):
+def _plot(history: dict, max_sims: np.ndarray, wandb_run,cfg: Config):
     plots_dir = Path(cfg.plots_dir)
     plots_dir.mkdir(parents=True, exist_ok=True)
     """Inline plots — not worth a separate file."""
@@ -145,7 +145,7 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
         logger.info("Using cached dedup artifact — skipping BoW computation")
         train_dedup, bow_all = load_dedup(cfg.artifacts_load_dir)
     else:
-        deduper = deduper = SemanticDeduplicator(
+        deduper = SemanticDeduplicator(
             sim_threshold=cfg.sim_threshold,
             max_features=cfg.bow_max_features,
             ngram_max=cfg.bow_ngram_max,
@@ -186,7 +186,7 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
 
     # sim distribution plot
     max_sims = cosine_similarity(bow_train, bow_val).max(axis=0)
-    _plot({}, max_sims, wandb_run)
+    _plot({}, max_sims, wandb_run, cfg)
 
     # ── 5. LSTM Vocabulary (built from train text, cached) ────────────────────
     art = try_load(
@@ -244,7 +244,7 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
                       opt, sched, loss_fn,
                       cfg.device, cfg_dict, wandb_run)
     history = trainer.train()
-    _plot(history, None, wandb_run)
+    _plot(history, None, wandb_run,cfg)
 
     # ── 10. Save model artifact ───────────────────────────────────────────────
     save_model(wandb_run, model, cfg.artifacts_save_dir,
