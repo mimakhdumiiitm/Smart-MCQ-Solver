@@ -17,6 +17,8 @@ transformer so the model learns "option A is better than B given C".
 This is the key addition over naive independent scoring.
 """
 
+import logging
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -195,21 +197,35 @@ class MCQDeBERTa(nn.Module):
 
     def freeze_backbone_layers(self, n: int):
         """Freeze embeddings + bottom-n transformer layers."""
+
+        import logging
+        logger = logging.getLogger("DeBERTa.Model")
+
+        layers = self._transformer_layers()
+
+        if n >= len(layers):
+            logger.warning(
+                f"freeze_layers={n} >= total layers={len(layers)}. "
+                f"Capping at {len(layers) - 1} to keep at least 1 layer trainable."
+            )
+            n = max(0, len(layers) - 1)
+
+        # Freeze embeddings
         for p in self.encoder.embeddings.parameters():
             p.requires_grad = False
 
-        for layer in self._transformer_layers()[:n]:
+        # Freeze bottom n layers
+        for layer in layers[:n]:
             for p in layer.parameters():
                 p.requires_grad = False
 
-        frozen  = sum(not p.requires_grad for p in self.encoder.parameters())
-        total   = sum(1 for _ in self.encoder.parameters())
-        logger_msg = (
+        frozen = sum(not p.requires_grad for p in self.encoder.parameters())
+        total = sum(1 for _ in self.encoder.parameters())
+
+        logger.info(
             f"Frozen {frozen}/{total} backbone params "
             f"(bottom-{n} layers + embeddings)"
         )
-        import logging
-        logging.getLogger("DeBERTa.Model").info(logger_msg)
 
     def unfreeze_top_layer(self) -> bool:
         """Unfreeze the topmost still-frozen transformer layer."""

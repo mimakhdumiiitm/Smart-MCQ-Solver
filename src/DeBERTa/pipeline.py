@@ -235,6 +235,13 @@ def run(
             "data/group_overlap" : len(overlap),
         })
 
+    # AFTER the split, ADD
+    if len(val_df) < 200:
+        logger.warning(
+            f"Validation set has only {len(val_df)} samples. "
+            f"MAP@3 estimates will be noisy. "
+            f"Consider raising cfg.val_size or loosening sim_threshold."
+        )
     # ── 4. Leakage audit ──────────────────────────────────────────────────────
     report = LeakageAuditor(cfg.audit_top_k).run(
         train_df, val_df, sbert_train, sbert_val, wandb_run)

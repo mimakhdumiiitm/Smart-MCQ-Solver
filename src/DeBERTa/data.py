@@ -177,9 +177,9 @@ class SemanticDeduplicator:
         )
         clustering = AgglomerativeClustering(
             n_clusters         = None,
-            distance_threshold = 1.0 - self.sim_threshold,
+            distance_threshold = 1.0 - self.sim_threshold,  # now 0.08
             metric             = 'cosine',
-            linkage            = 'average',
+            linkage            = 'complete',   # all members must be within threshold
         )
         labels               = clustering.fit_predict(sbert_matrix)
         df['semantic_group'] = labels
@@ -190,7 +190,23 @@ class SemanticDeduplicator:
             f"Clusters: {n_clusters:,}  "
             f"multi-member (near-dupes): {n_multi:,}"
         )
-
+        # AFTER clustering, ADD this logging block before return
+        n_clusters   = len(np.unique(labels))
+        cluster_size = pd.Series(labels).value_counts()
+        n_removed    = (cluster_size - 1).clip(lower=0).sum()
+        n_multi      = (cluster_size > 1).sum()
+        logger.info(
+            f"Clusters: {n_clusters:,}  "
+            f"multi-member (near-dupes): {n_multi:,}  "
+            f"rows that WOULD be removed at dedup: {n_removed:,}  "
+            f"({100 * n_removed / len(df):.1f}%)"
+        )
+        # Abort if dedup removes > 25% — likely threshold too tight
+        if n_removed / len(df) > 0.25:
+            logger.warning(
+                f"Dedup would remove {100 * n_removed / len(df):.1f}% of data. "
+                f"Consider raising sim_threshold."
+            )
         return df, sbert_matrix
 
 

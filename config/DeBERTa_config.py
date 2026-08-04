@@ -9,7 +9,7 @@ class Config:
     # ── Dedup / Audit (SBERT) ─────────────────────────────────────────────────
     sbert_model       : str   = "sentence-transformers/all-MiniLM-L6-v2"
     sbert_batch_size  : int   = 256          # large batch → fast encoding
-    sim_threshold     : float = 0.85         # cosine threshold for near-dupes
+    sim_threshold     : float = 0.92        
     audit_top_k       : int   = 20
 
     # ── MCQ Model (DeBERTa) ───────────────────────────────────────────────────
@@ -17,19 +17,19 @@ class Config:
     max_len           : int   = 128          # tokens per (Q, option) pair
     pooling           : str   = "mean"       # "cls" | "mean" | "attention"
     hidden_dropout    : float = 0.1
-    freeze_layers     : int   = 6            # freeze bottom-N layers at start
-    unfreeze_epoch    : int   = 3            # begin unfreezing from this epoch
+    freeze_layers     : int   = 3            # freeze bottom-N layers at start
+    unfreeze_epoch    : int   = 2            # begin unfreezing from this epoch
 
     # ── Training ──────────────────────────────────────────────────────────────
-    epochs            : int   = 12
+    epochs            : int   = 15
     batch_size        : int   = 16
-    grad_accum        : int   = 2            # effective batch = 32
-    lr_backbone       : float = 8e-6
-    lr_head           : float = 1e-4
+    grad_accum        : int   = 4           
+    lr_backbone   : float = 2e-5  
+    lr_head       : float = 2e-4   
+    warmup_ratio  : float = 0.15  
     weight_decay      : float = 0.01
     max_grad_norm     : float = 1.0
-    warmup_ratio      : float = 0.10
-    early_stop_patience: int  = 5
+    early_stop_patience: int  = 3
 
     # ── Loss ──────────────────────────────────────────────────────────────────
     smoothing         : float = 0.05
@@ -38,7 +38,7 @@ class Config:
     rank_w            : float = 0.3
 
     # ── Split ─────────────────────────────────────────────────────────────────
-    val_size          : float = 0.10
+    val_size          : float = 0.20
     seed              : int   = 42
     top_k             : int   = 3
 

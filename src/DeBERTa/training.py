@@ -54,17 +54,14 @@ class MCQLoss(nn.Module):
         self.ce_w   = ce_w
         self.rank_w = rank_w
 
-    def forward(self, logits: torch.Tensor,
-                targets: torch.Tensor):
+    def forward(self, logits, targets):
         ce_loss   = self.ce(logits, targets)
-
-        # hinge ranking: max(0, margin - (correct_score - wrong_score))
-        pos       = logits.gather(1, targets.unsqueeze(1))         # [B, 1]
-        margin    = F.relu(self.margin - (pos - logits))           # [B, N]
+        pos       = logits.gather(1, targets.unsqueeze(1))
+        margin    = F.relu(self.margin - (pos - logits))
         eye       = torch.zeros_like(logits).scatter_(
             1, targets.unsqueeze(1), 1.)
         rank_loss = (margin * (1 - eye)).sum(1).mean()
-
+        # Keep backward compat: return weighted total + components
         total = self.ce_w * ce_loss + self.rank_w * rank_loss
         return total, ce_loss.item(), rank_loss.item()
 
