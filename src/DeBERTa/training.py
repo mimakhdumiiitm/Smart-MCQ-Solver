@@ -143,7 +143,10 @@ class Trainer:
         self.wandb_run = wandb_run
 
         self.use_fp16   = cfg.get('use_fp16', True) and device != 'cpu'
-        self.scaler     = GradScaler(enabled=self.use_fp16)
+        self.scaler = GradScaler(
+            "cuda",
+            enabled=self.use_fp16,
+        )
         self.grad_accum = cfg.get('grad_accum', 2)
 
         self.history    = defaultdict(list)
@@ -181,7 +184,7 @@ class Trainer:
             tids = batch["token_type_ids"].to(self.device)
             lbls = batch["label"].to(self.device)
 
-            with autocast(enabled=self.use_fp16):
+            with autocast(device_type="cuda",enabled=self.use_fp16):
                 logits = self.model(iids, mask, tids)
                 loss, ce, rank = self.loss_fn(logits, lbls)
                 loss = loss / self.grad_accum
@@ -234,7 +237,7 @@ class Trainer:
             tids = batch['token_type_ids'].to(self.device)
             lbls = batch['label'].to(self.device)
 
-            with autocast(enabled=self.use_fp16):
+            with autocast(device_type="cuda",enabled=self.use_fp16):
                 logits   = self.model(iids, mask, tids)
                 loss, *_ = self.loss_fn(logits, lbls)
 
