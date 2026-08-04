@@ -3,7 +3,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from data import normalize_text
+from src.BiLSTM.data import normalize_text
 from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger("Auditor")

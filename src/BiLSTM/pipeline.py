@@ -6,15 +6,15 @@ import numpy as np
 import torch
 from sklearn.model_selection import GroupShuffleSplit
 from torch.utils.data import DataLoader
+from sklearn.metrics.pairwise import cosine_similarity
 
-from config    import Config
-from data      import (SemanticDeduplicator, Vocabulary, MCQDataset,
-                       collate_fn, normalize_text,
-                       cosine_similarity_block, ANSWER_LABELS)
-from model     import MCQBiLSTM
-from training  import MCQLoss, Trainer, ranked_preds
-from auditor   import LeakageAuditor
-from artifacts import (try_load, save_dedup, load_dedup,
+from config.BiLSTM_config import Config
+from src.BiLSTM.data import (SemanticDeduplicator, Vocabulary, MCQDataset,
+                       collate_fn, normalize_text, ANSWER_LABELS)
+from src.BiLSTM.model import MCQBiLSTM
+from src.BiLSTM.training  import MCQLoss, Trainer, ranked_preds
+from src.BiLSTM.auditor   import LeakageAuditor
+from src.BiLSTM.artifacts import (try_load, save_dedup, load_dedup,
                        save_vocab, load_vocab,
                        save_model, save_audit, save_submission,
                        _DEDUP, _VOCAB)
@@ -162,7 +162,7 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
     save_audit(wandb_run, report, cfg.artifact_dir)
 
     # sim distribution plot
-    max_sims = cosine_similarity_block(bow_train, bow_val).max(axis=0)
+    max_sims = cosine_similarity(bow_train, bow_val).max(axis=0)
     _plot({}, max_sims, wandb_run)
 
     # ── 5. LSTM Vocabulary (built from train text, cached) ────────────────────
