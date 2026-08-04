@@ -43,12 +43,12 @@ def _upload(run, name, atype, desc, files: dict, meta: dict = None):
     logger.info(f"Artifact '{name}' uploaded.")
 
 
-def try_load(run, artifact_name: str, artifact_dir: str):
+def try_load(run, artifact_name: str, artifacts_load_dir: str):
     if run is None or not _W:
         return None
     try:
         art = run.use_artifact(artifact_name)
-        art.download(root=artifact_dir)
+        art.download(root=artifacts_load_dir)
         logger.info(f"Artifact '{artifact_name}' restored.")
         return art
     except Exception as e:
@@ -58,8 +58,8 @@ def try_load(run, artifact_name: str, artifact_dir: str):
 
 # ── dedup + BoW matrix ───────────────────────────────────────────────────────
 
-def save_dedup(run, df: pd.DataFrame, bow: np.ndarray, artifact_dir: str):
-    d   = _dir(artifact_dir)
+def save_dedup(run, df: pd.DataFrame, bow: np.ndarray, artifacts_save_dir: str):
+    d   = _dir(artifacts_save_dir)
     csv = d / "dedup_train.csv";  df.to_csv(csv, index=False)
     npy = d / "bow_matrix.npy";   np.save(npy, bow)
     _upload(run, _DEDUP, "dataset",
@@ -68,8 +68,8 @@ def save_dedup(run, df: pd.DataFrame, bow: np.ndarray, artifact_dir: str):
             {"n_rows": len(df), "bow_shape": list(bow.shape)})
 
 
-def load_dedup(artifact_dir: str):
-    d   = Path(artifact_dir)
+def load_dedup(artifacts_load_dir: str):
+    d   = Path(artifacts_load_dir)
     df  = pd.read_csv(d / "dedup_train.csv")
     bow = np.load(d / "bow_matrix.npy")
     logger.info(f"Loaded dedup: {len(df)} rows, BoW {bow.shape}")
@@ -78,8 +78,8 @@ def load_dedup(artifact_dir: str):
 
 # ── vocab ─────────────────────────────────────────────────────────────────────
 
-def save_vocab(run, vocab, artifact_dir: str):
-    d = _dir(artifact_dir)
+def save_vocab(run, vocab, artifacts_save_dir):
+    d = _dir(artifacts_save_dir)
     p = d / "vocabulary.pkl"
     with open(p, "wb") as f:
         pickle.dump(vocab, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -87,33 +87,33 @@ def save_vocab(run, vocab, artifact_dir: str):
             {p: "vocabulary.pkl"}, {"vocab_size": len(vocab)})
 
 
-def load_vocab(artifact_dir: str):
-    with open(Path(artifact_dir) / "vocabulary.pkl", "rb") as f:
+def load_vocab(artifacts_load_dir: str):
+    with open(Path(artifacts_load_dir) / "vocabulary.pkl", "rb") as f:
         return pickle.load(f)
 
 
 # ── model ─────────────────────────────────────────────────────────────────────
 
-def save_model(run, model, artifact_dir: str, meta: dict = None):
+def save_model(run, model, artifacts_save_dir: str, meta: dict = None):
     import torch
-    d = _dir(artifact_dir)
+    d = _dir(artifacts_save_dir)
     p = d / "bilstm_best.pt"
     torch.save(model.state_dict(), p)
     _upload(run, _MODEL, "model", "Best Bi-LSTM checkpoint",
             {p: "bilstm_best.pt"}, meta or {})
 
 
-def load_model(model, artifact_dir: str, device: str = "cpu"):
+def load_model(model, artifacts_load_dir: str, device: str = "cpu"):
     import torch
-    p = Path(artifact_dir) / "bilstm_best.pt"
+    p = Path(artifacts_load_dir) / "bilstm_best.pt"
     model.load_state_dict(torch.load(p, map_location=device))
     return model.to(device)
 
 
 # ── audit ─────────────────────────────────────────────────────────────────────
 
-def save_audit(run, report: dict, artifact_dir: str):
-    d = _dir(artifact_dir)
+def save_audit(run, report: dict, artifacts_save_dir: str):
+    d = _dir(artifacts_save_dir)
     p = d / "audit_report.json"
 
     def _s(o):
@@ -132,8 +132,8 @@ def save_audit(run, report: dict, artifact_dir: str):
 
 # ── submission ────────────────────────────────────────────────────────────────
 
-def save_submission(run, sub: pd.DataFrame, artifact_dir: str):
-    d = _dir(artifact_dir)
+def save_submission(run, sub: pd.DataFrame, submission_dir: str):
+    d = _dir(submission_dir)
     p = d / "BiLSTM_submission.csv" 
     sub.to_csv(p, index=False)
     _upload(

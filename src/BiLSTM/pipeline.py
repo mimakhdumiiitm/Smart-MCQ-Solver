@@ -38,6 +38,8 @@ def _load(path: str):
 
 
 def _plot(history: dict, max_sims: np.ndarray, wandb_run):
+    plots_dir = Path(cfg.plots_dir)
+    plots_dir.mkdir(parents=True, exist_ok=True)
     """Inline plots — not worth a separate file."""
     try:
         import matplotlib.pyplot as plt
@@ -53,11 +55,13 @@ def _plot(history: dict, max_sims: np.ndarray, wandb_run):
             ax[2].plot(ep, history['vl_acc'],  color='purple')
             ax[2].set_title('Val Acc');    ax[2].grid(alpha=.3)
             plt.tight_layout()
-            plt.savefig('training_curves.png', dpi=150)
+            training_plot = plots_dir / "training_curves.png"
+            plt.savefig(training_plot, dpi=150)
             if wandb_run:
                 import wandb
-                wandb_run.log({"training_curves":
-                               wandb.Image('training_curves.png')})
+                wandb_run.log({
+                    "training_curves": wandb.Image(str(training_plot))
+                })
             plt.show()
 
         if max_sims is not None:   # similarity distribution
@@ -69,11 +73,13 @@ def _plot(history: dict, max_sims: np.ndarray, wandb_run):
             plt.xlabel('BoW cosine similarity (val → train)')
             plt.title('Train–Val Similarity Distribution')
             plt.legend(); plt.tight_layout()
-            plt.savefig('sim_distribution.png', dpi=150)
+            sim_plot = plots_dir / "sim_distribution.png"
+            plt.savefig(sim_plot, dpi=150)
             if wandb_run:
                 import wandb
-                wandb_run.log({"sim_distribution":
-                               wandb.Image('sim_distribution.png')})
+                wandb_run.log({
+                    "sim_distribution": wandb.Image(str(sim_plot))
+                })
             plt.show()
 
     except ImportError:
@@ -111,7 +117,7 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
 
     # ── W&B ──────────────────────────────────────────────────────────────────
     wandb_run = init_wandb(
-    config=Config,
+    config=cfg_dict,
     run_name="BiLSTM",
     model_name="BiLSTM",
     group="scratch-models",
@@ -128,18 +134,24 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
     #              → AgglomerativeClustering (cosine distance)
     #              → semantic_group column for GroupShuffleSplit
     #
-    art = try_load(wandb_run, f"{_DEDUP}:latest", cfg.artifact_dir)
+    art = try_load(
+        wandb_run,
+        f"{_DEDUP}:latest",
+        cfg.artifacts_load_dir,
+    )
+
     if art:
         logger.info("Using cached dedup artifact — skipping BoW computation")
-        train_dedup, bow_all = load_dedup(cfg.artifact_dir)
+        train_dedup, bow_all = load_dedup(cfg.artifacts_load_dir)
     else:
-        deduper = SemanticDeduplicator(
-            sim_threshold = cfg.sim_threshold,
-            max_features  = cfg.bow_max_features,
-            ngram_max     = cfg.bow_ngram_max,
-        )
+        deduper = SemanticDeduplicator(...)
         train_dedup, bow_all = deduper.fit_transform(train_raw)
-        save_dedup(wandb_run, train_dedup, bow_all, cfg.artifact_dir)
+        save_dedup(
+            wandb_run,
+            train_dedup,
+            bow_all,
+            cfg.artifacts_save_dir,
+        )
 
     # ── 3. Group-aware split ──────────────────────────────────────────────────
     gss = GroupShuffleSplit(1, test_size=cfg.val_size, random_state=cfg.seed)
@@ -165,17 +177,21 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
     # ── 4. Leakage audit (our own cosine) ─────────────────────────────────────
     report = LeakageAuditor(cfg.audit_top_k).run(
         train_df, val_df, bow_train, bow_val, wandb_run)
-    save_audit(wandb_run, report, cfg.artifact_dir)
+    save_audit(wandb_run, report, cfg.artifacts_save_dir)
 
     # sim distribution plot
     max_sims = cosine_similarity(bow_train, bow_val).max(axis=0)
     _plot({}, max_sims, wandb_run)
 
     # ── 5. LSTM Vocabulary (built from train text, cached) ────────────────────
-    art = try_load(wandb_run, f"{_VOCAB}:latest", cfg.artifact_dir)
+    art = try_load(
+    wandb_run,
+    f"{_VOCAB}:latest",
+    cfg.artifacts_load_dir
+    )
     if art:
         logger.info("Using cached vocab artifact")
-        vocab = load_vocab(cfg.artifact_dir)
+        vocab = load_vocab(cfg.artifacts_load_dir)
     else:
         texts = []
         for _, row in train_df.iterrows():
@@ -185,7 +201,7 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
                 texts.append(
                     f"{q} [SEP] {normalize_text(str(row.get(lbl, '')))}")
         vocab = Vocabulary(cfg.max_vocab, cfg.min_freq).build(texts)
-        save_vocab(wandb_run, vocab, cfg.artifact_dir)
+        save_vocab(wandb_run, vocab, cfg.artifacts_save_dir)
 
     if wandb_run:
         wandb_run.log({"vocab/size": len(vocab)})
@@ -226,7 +242,7 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
     _plot(history, None, wandb_run)
 
     # ── 10. Save model artifact ───────────────────────────────────────────────
-    save_model(wandb_run, model, cfg.artifact_dir,
+    save_model(wandb_run, model, cfg.artifacts_save_dir,
                meta={"best_val_map3": trainer.best_map3,
                      "vocab_size":    len(vocab)})
 
@@ -258,7 +274,7 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
                 preds += [' '.join(r) for r in ranked_preds(logits)]
         sub = pd.DataFrame({'ID': ids, 'Prediction': preds})
         logger.info(f"Submission: {len(sub):,} rows")
-        save_submission(wandb_run, sub, cfg.artifact_dir)
+        save_submission(wandb_run, sub, cfg.submission_dir)
 
     # ── 12. Finish W&B ────────────────────────────────────────────────────────
     finish_run(wandb_run)

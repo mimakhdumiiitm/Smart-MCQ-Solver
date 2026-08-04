@@ -9,7 +9,12 @@ class Config:
     # paths
     train_path   : str           = '/kaggle/input/competitions/smart-mcq-solver-challenge/train.csv'
     test_path    : Optional[str] = "/kaggle/input/competitions/smart-mcq-solver-challenge/test.csv"
-    artifact_dir : str           = '/kaggle/working/artifacts'
+    submission_dir : str           = '/kaggle/working/submission'
+    artifacts_load_dir = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/artifacts"
+    artifacts_save_dir = "/kaggle/working/artifacts"
+    processed_dir = "/kaggle/input/notebooks/mimakhdumiiitm/dl-22f3001418-notebook-t22026/outputs/processed_files"
+    processed_save_dir = "/kaggle/working/processed_files"
+    plots_dir = "/kaggle/working/plots"
 
     # W&B
     use_wandb      : bool          = True
