@@ -1,17 +1,5 @@
-# data.py
-"""
-All data logic — fully from scratch, zero pretrained models:
+# C:\aa all photos\all coding stuff\DL GenAI Project\Smart-MCQ-Solver\src\BiLSTM\data.py
 
-  normalize_text          – aggressive text cleaning
-  canonical_fingerprint   – option-order-invariant MD5
-  option_set_fingerprint  – option-set-only MD5
-  BagOfWordsEncoder       – builds its own token/bigram vocab,
-                            returns L2-normalised sparse-ish float32 vectors
-  cosine_similarity_block – our own block-wise cosine (no sklearn cosine)
-  SemanticDeduplicator    – BoW vectors → AgglomerativeClustering
-  Vocabulary              – LSTM token vocabulary (separate from BoW vocab)
-  MCQDataset / collate_fn – PyTorch dataset
-"""
 
 import re
 import hashlib

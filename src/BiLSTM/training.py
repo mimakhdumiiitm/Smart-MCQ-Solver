@@ -1,4 +1,4 @@
-# training.py
+# C:\aa all photos\all coding stuff\DL GenAI Project\Smart-MCQ-Solver\src\BiLSTM\training.py
 """
 All training logic: loss + metrics + early stopping + trainer
 """

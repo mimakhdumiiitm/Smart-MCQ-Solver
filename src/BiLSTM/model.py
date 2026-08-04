@@ -1,4 +1,4 @@
-# model.py
+# C:\aa all photos\all coding stuff\DL GenAI Project\Smart-MCQ-Solver\src\BiLSTM\model.py
 """
 Bi-LSTM MCQ model — fully from scratch, no pretrained weights.
 """

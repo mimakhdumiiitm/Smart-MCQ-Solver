@@ -1,4 +1,4 @@
-# artifacts.py
+# C:\aa all photos\all coding stuff\DL GenAI Project\Smart-MCQ-Solver\src\BiLSTM\artifacts.py
 """
 W&B artifact save / restore helpers.
 Five artifacts: dedup-data, vocab, model, audit-report, submission.
