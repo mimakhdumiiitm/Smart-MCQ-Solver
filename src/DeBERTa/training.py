@@ -1,15 +1,4 @@
 # src/DeBERTa/training.py
-"""
-Training logic for DeBERTa-v3.
-
-Changes vs. BiLSTM training.py
-───────────────────────────────
-• Gradient accumulation  (large model, small per-GPU batch)
-• Linear warmup + linear decay scheduler  (standard for transformers)
-• Mixed-precision  (torch.cuda.amp)
-• Same MCQLoss, same metrics, same early-stopping interface
-"""
-
 import logging
 from collections import defaultdict
 
@@ -20,7 +9,6 @@ import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from transformers import get_linear_schedule_with_warmup
 
-# ── reuse loss + metric helpers from BiLSTM ──────────────────────────────────
 from src.BiLSTM.training import MCQLoss, ranked_preds, map_at_3, ANSWER_LABELS
 
 logger = logging.getLogger("DeBERTa.Trainer")
@@ -30,43 +18,77 @@ class Trainer:
     """
     Fine-tuning trainer for DeBERTa-v3.
 
-    Identical external interface to BiLSTM Trainer:
-        trainer = Trainer(...)
-        history = trainer.train()
+    Precision strategy
+    ──────────────────
+    fp16=True  →  tries bf16 first (no scaler needed, wider range)
+                  falls back to fp16 WITHOUT GradScaler
+                  (DeBERTa-v3 has mixed-dtype params that break unscale_)
+    fp16=False →  full fp32
     """
 
     def __init__(self, model, train_dl, val_dl,
                  opt, sched, loss_fn,
                  device, cfg: dict, wandb_run=None):
 
-        self.model       = model.to(device)
-        self.train_dl    = train_dl
-        self.val_dl      = val_dl
-        self.opt         = opt
-        self.sched       = sched           # linear schedule with warmup
-        self.loss_fn     = loss_fn
-        self.device      = device
-        self.cfg         = cfg
-        self.wandb_run   = wandb_run
+        self.model      = model.to(device)
+        self.train_dl   = train_dl
+        self.val_dl     = val_dl
+        self.opt        = opt
+        self.sched      = sched
+        self.loss_fn    = loss_fn
+        self.device     = device
+        self.cfg        = cfg
+        self.wandb_run  = wandb_run
 
-        self.history     = defaultdict(list)
-        self.best_map3   = -np.inf
-        self.best_state  = None
+        self.history    = defaultdict(list)
+        self.best_map3  = -np.inf
+        self.best_state = None
 
         # early stopping
         self._es_counter = 0
         self._es_best    = -np.inf
 
-        # mixed precision scaler
-        self.use_fp16    = cfg.get('fp16', True) and device == 'cuda'
-        self.scaler      = torch.cuda.amp.GradScaler(
-            enabled=self.use_fp16)
+        self.grad_accum = cfg.get('grad_accum_steps', 4)
 
-        self.grad_accum  = cfg.get('grad_accum_steps', 4)
+        # ── precision setup ───────────────────────────────────────────────────
+        self.autocast_ctx, self.scaler = self._setup_precision(
+            cfg.get('fp16', True), device)
 
-        logger.info(f"Trainer | device={device} | "
-                    f"fp16={self.use_fp16} | "
-                    f"grad_accum={self.grad_accum}")
+    # ── precision factory ─────────────────────────────────────────────────────
+
+    def _setup_precision(self, fp16_requested: bool, device: str):
+        """
+        Returns (autocast_context_manager, scaler_or_None).
+
+        Priority
+        ────────
+        1. bf16  — no scaler, wide dynamic range, works with DeBERTa-v3
+        2. fp16  — no scaler (DeBERTa-v3 mixed dtypes break GradScaler)
+        3. fp32  — plain training
+        """
+        if not fp16_requested or device != "cuda":
+            logger.info("Precision: fp32 (no autocast)")
+            # null context — does nothing
+            return torch.amp.autocast("cuda", enabled=False), None
+
+        # ── prefer bf16 ───────────────────────────────────────────────────────
+        if torch.cuda.is_bf16_supported():
+            logger.info("Precision: bf16 autocast (no GradScaler needed)")
+            ctx = torch.amp.autocast("cuda", dtype=torch.bfloat16)
+            return ctx, None       # bf16 never needs a scaler
+
+        # ── fall back to fp16 without scaler ──────────────────────────────────
+        # DeBERTa-v3 keeps some params in fp32 (SentencePiece embeddings)
+        # → GradScaler.unscale_() crashes on mixed dtypes
+        # → run fp16 autocast for speed but skip loss scaling
+        logger.warning(
+            "bf16 not supported on this GPU — using fp16 autocast "
+            "WITHOUT GradScaler (safe for DeBERTa-v3 mixed-dtype params). "
+            "Loss may underflow on very long training runs; "
+            "switch to a GPU with bf16 support (Ampere+) for best results."
+        )
+        ctx = torch.amp.autocast("cuda", dtype=torch.float16)
+        return ctx, None           # no scaler — avoids the unscale_ crash
 
     # ── early stopping ────────────────────────────────────────────────────────
 
@@ -84,7 +106,7 @@ class Trainer:
 
     def _train_epoch(self) -> float:
         self.model.train()
-        tot_loss = 0.0
+        tot_loss  = 0.0
         n_batches = 0
 
         self.opt.zero_grad()
@@ -94,27 +116,28 @@ class Trainer:
             mask   = batch['attention_mask'].to(self.device)
             labels = batch['label']         .to(self.device)
 
-            # ── forward with optional AMP ─────────────────────────────────
-            with torch.cuda.amp.autocast(enabled=self.use_fp16):
-                logits        = self.model(ids, mask)
-                loss, *_      = self.loss_fn(logits, labels)
+            # ── forward ───────────────────────────────────────────────────────
+            with self.autocast_ctx:
+                logits   = self.model(ids, mask)
+                loss, *_ = self.loss_fn(logits, labels)
                 # scale for gradient accumulation
-                loss_scaled   = loss / self.grad_accum
+                loss_scaled = loss / self.grad_accum
 
-            self.scaler.scale(loss_scaled).backward()
+            # ── backward ──────────────────────────────────────────────────────
+            # no GradScaler → plain backward
+            loss_scaled.backward()
 
-            # ── optimizer step every grad_accum batches ───────────────────
-            if (step + 1) % self.grad_accum == 0 or \
-               (step + 1) == len(self.train_dl):
+            # ── optimizer step every grad_accum batches ───────────────────────
+            is_last_batch        = (step + 1) == len(self.train_dl)
+            is_accum_step        = (step + 1) % self.grad_accum == 0
 
-                self.scaler.unscale_(self.opt)
+            if is_accum_step or is_last_batch:
                 nn.utils.clip_grad_norm_(
                     self.model.parameters(),
                     self.cfg.get('max_grad_norm', 1.0))
 
-                self.scaler.step(self.opt)
-                self.scaler.update()
-                self.sched.step()           # step per optimizer update
+                self.opt.step()
+                self.sched.step()
                 self.opt.zero_grad()
 
             tot_loss  += loss.item()
@@ -137,7 +160,7 @@ class Trainer:
             mask   = batch['attention_mask'].to(self.device)
             labels = batch['label']         .to(self.device)
 
-            with torch.cuda.amp.autocast(enabled=self.use_fp16):
+            with self.autocast_ctx:
                 logits   = self.model(ids, mask)
                 loss, *_ = self.loss_fn(logits, labels)
 
@@ -172,21 +195,21 @@ class Trainer:
             lr = self.opt.param_groups[0]['lr']
 
             for k, v in [
-                ("tr_loss",    tr_loss),
-                ("vl_loss",    vl_loss),
-                ("vl_map3",    m3),
-                ("vl_acc",     acc),
+                ("tr_loss",      tr_loss),
+                ("vl_loss",      vl_loss),
+                ("vl_map3",      m3),
+                ("vl_acc",       acc),
                 ("vl_precision", prec),
-                ("vl_recall",  rec),
-                ("vl_f1",      f1),
-                ("lr",         lr),
+                ("vl_recall",    rec),
+                ("vl_f1",        f1),
+                ("lr",           lr),
             ]:
                 self.history[k].append(v)
 
             flag = ''
             if m3 > self.best_map3:
                 self.best_map3  = m3
-                # save best weights (CPU to save GPU memory)
+                # clone to CPU to free GPU memory
                 self.best_state = {
                     k: v.clone().cpu()
                     for k, v in self.model.state_dict().items()
@@ -214,10 +237,11 @@ class Trainer:
                 logger.info(f"Early stop at epoch {ep}")
                 break
 
-        # restore best weights
+        # restore best weights (move back to device)
         if self.best_state:
             self.model.load_state_dict(
-                {k: v.to(self.device) for k, v in self.best_state.items()})
+                {k: v.to(self.device)
+                 for k, v in self.best_state.items()})
 
         logger.info(f"Best Val MAP@3 = {self.best_map3:.4f}")
 
