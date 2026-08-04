@@ -83,7 +83,13 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
     torch.manual_seed(cfg.seed); torch.cuda.manual_seed_all(cfg.seed)
 
     # ── W&B ──────────────────────────────────────────────────────────────────
-    wandb_run = init_wandb(cfg, run_name=cfg.wandb_run_name, model_tag="bilstm")
+    wandb_run = init_wandb(
+    Config,
+    run_name="BiLSTM_v1",
+    model_name="BiLSTM",
+    group="Final Models",
+    tags=["BiLSTM","scratch"]
+    )
 
     # ── 1. Load ───────────────────────────────────────────────────────────────
     train_raw = _load(train_path)
@@ -175,13 +181,16 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
                meta={"best_val_map3": trainer.best_map3,
                      "vocab_size": len(vocab)})
 
-    log_model_metrics(wandb_run, {
-        "f1_score" : trainer.best_map3,
-        "accuracy" : max(history['vl_acc']),
-        "precision": trainer.best_map3,
-        "recall"   : trainer.best_map3,
-        "map_at_k" : trainer.best_map3,
-    })
+    log_model_metrics(
+        wandb_run,
+        {
+            "f1_score": max(history["vl_f1"]),
+            "accuracy": max(history["vl_acc"]),
+            "precision": max(history["vl_precision"]),
+            "recall": max(history["vl_recall"]),
+            "map_at_k": trainer.best_map3,
+        },
+    )
 
     # ── 10. Inference ─────────────────────────────────────────────────────────
     sub = None
