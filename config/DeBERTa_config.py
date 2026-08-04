@@ -56,6 +56,7 @@ class Config:
     top_k              : int   = 3
 
     # ── W&B ────────────────────────────────────────────────────────────────
-    use_wandb          : bool  = True
-    wandb_project      : str   = "Smart-MCQ-Solver"
-    wandb_entity       : str   = ""
+    use_wandb      : bool          = True
+    wandb_project  : str           = 'Milestone-6'
+    wandb_entity   : Optional[str] = None
+    wandb_run_name : str           = 'deberta-run'
