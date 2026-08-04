@@ -144,7 +144,11 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
         logger.info("Using cached dedup artifact — skipping BoW computation")
         train_dedup, bow_all = load_dedup(cfg.artifacts_load_dir)
     else:
-        deduper = SemanticDeduplicator(...)
+        deduper = deduper = SemanticDeduplicator(
+            sim_threshold=cfg.sim_threshold,
+            max_features=cfg.bow_max_features,
+            ngram_max=cfg.bow_ngram_max,
+        )
         train_dedup, bow_all = deduper.fit_transform(train_raw)
         save_dedup(
             wandb_run,
