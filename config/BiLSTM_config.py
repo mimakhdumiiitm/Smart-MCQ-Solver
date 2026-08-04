@@ -8,7 +8,7 @@ import torch
 class Config:
     # paths
     train_path   : str           = '/kaggle/input/competitions/smart-mcq-solver-challenge/train.csv'
-    test_path    : Optional[str] = '/kaggle/input/competitions/smart-mcq-solver-challenge/test.csv'
+    test_path    : Optional[str] = "/kaggle/input/competitions/smart-mcq-solver-challenge/test.csv"
     artifact_dir : str           = '/kaggle/working/artifacts'
 
     # W&B

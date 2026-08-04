@@ -2,6 +2,7 @@
 """
 W&B artifact save / restore helpers.
 Five artifacts: dedup-data, vocab, model, audit-report, submission.
+BoW matrix stored as .npy (replaces SBERT embeddings).
 """
 
 import json
@@ -20,12 +21,11 @@ try:
 except ImportError:
     _W = False
 
-# artifact names
-_DEDUP  = "mcq-dedup-data"
-_VOCAB  = "mcq-vocab"
-_MODEL  = "mcq-model"
-_AUDIT  = "mcq-audit-report"
-_SUB    = "mcq-submission"
+_DEDUP = "mcq-dedup-data"
+_VOCAB = "mcq-vocab"
+_MODEL = "mcq-model"
+_AUDIT = "mcq-audit-report"
+_SUB   = "mcq-submission"
 
 
 def _dir(path):
@@ -33,11 +33,10 @@ def _dir(path):
 
 
 def _upload(run, name, atype, desc, files: dict, meta: dict = None):
-    """Create a W&B artifact and add all files in the dict {local_path: name}."""
     if run is None or not _W:
         return
-    art = wandb.Artifact(name=name, type=atype, description=desc,
-                         metadata=meta or {})
+    art = wandb.Artifact(name=name, type=atype,
+                         description=desc, metadata=meta or {})
     for local, aname in files.items():
         art.add_file(str(local), name=aname)
     run.log_artifact(art)
@@ -45,7 +44,6 @@ def _upload(run, name, atype, desc, files: dict, meta: dict = None):
 
 
 def try_load(run, artifact_name: str, artifact_dir: str):
-    """Return downloaded artifact object or None if not found."""
     if run is None or not _W:
         return None
     try:
@@ -58,23 +56,24 @@ def try_load(run, artifact_name: str, artifact_dir: str):
         return None
 
 
-# ── dedup ─────────────────────────────────────────────────────────────────────
+# ── dedup + BoW matrix ───────────────────────────────────────────────────────
 
-def save_dedup(run, df: pd.DataFrame, embs: np.ndarray, artifact_dir: str):
-    d = _dir(artifact_dir)
+def save_dedup(run, df: pd.DataFrame, bow: np.ndarray, artifact_dir: str):
+    d   = _dir(artifact_dir)
     csv = d / "dedup_train.csv";  df.to_csv(csv, index=False)
-    npy = d / "embeddings.npy";   np.save(npy, embs)
-    _upload(run, _DEDUP, "dataset", "Deduplicated data + SBERT embeddings",
-            {csv: "dedup_train.csv", npy: "embeddings.npy"},
-            {"n_rows": len(df), "emb_shape": list(embs.shape)})
+    npy = d / "bow_matrix.npy";   np.save(npy, bow)
+    _upload(run, _DEDUP, "dataset",
+            "Deduplicated data + BoW matrix",
+            {csv: "dedup_train.csv", npy: "bow_matrix.npy"},
+            {"n_rows": len(df), "bow_shape": list(bow.shape)})
 
 
 def load_dedup(artifact_dir: str):
-    d    = Path(artifact_dir)
-    df   = pd.read_csv(d / "dedup_train.csv")
-    embs = np.load(d / "embeddings.npy")
-    logger.info(f"Loaded dedup: {len(df)} rows, embs {embs.shape}")
-    return df, embs
+    d   = Path(artifact_dir)
+    df  = pd.read_csv(d / "dedup_train.csv")
+    bow = np.load(d / "bow_matrix.npy")
+    logger.info(f"Loaded dedup: {len(df)} rows, BoW {bow.shape}")
+    return df, bow
 
 
 # ── vocab ─────────────────────────────────────────────────────────────────────
@@ -84,7 +83,7 @@ def save_vocab(run, vocab, artifact_dir: str):
     p = d / "vocabulary.pkl"
     with open(p, "wb") as f:
         pickle.dump(vocab, f, protocol=pickle.HIGHEST_PROTOCOL)
-    _upload(run, _VOCAB, "vocab", "Fitted Vocabulary",
+    _upload(run, _VOCAB, "vocab", "Fitted LSTM Vocabulary",
             {p: "vocabulary.pkl"}, {"vocab_size": len(vocab)})
 
 
@@ -111,22 +110,22 @@ def load_model(model, artifact_dir: str, device: str = "cpu"):
     return model.to(device)
 
 
-# ── audit report ──────────────────────────────────────────────────────────────
+# ── audit ─────────────────────────────────────────────────────────────────────
 
 def save_audit(run, report: dict, artifact_dir: str):
     d = _dir(artifact_dir)
     p = d / "audit_report.json"
 
-    def _serial(obj):
-        if isinstance(obj, dict):  return {k: _serial(v) for k, v in obj.items()}
-        if isinstance(obj, (list, tuple)): return [_serial(v) for v in obj]
-        if isinstance(obj, set):   return list(obj)
-        if isinstance(obj, (np.integer, np.floating)): return obj.item()
-        if isinstance(obj, np.ndarray): return obj.tolist()
-        return obj
+    def _s(o):
+        if isinstance(o, dict):           return {k: _s(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):  return [_s(v) for v in o]
+        if isinstance(o, set):            return list(o)
+        if isinstance(o, (np.integer, np.floating)): return o.item()
+        if isinstance(o, np.ndarray):     return o.tolist()
+        return o
 
     with open(p, "w") as f:
-        json.dump(_serial(report), f, indent=2)
+        json.dump(_s(report), f, indent=2)
     _upload(run, _AUDIT, "report", "Leakage audit report",
             {p: "audit_report.json"})
 
@@ -135,7 +134,13 @@ def save_audit(run, report: dict, artifact_dir: str):
 
 def save_submission(run, sub: pd.DataFrame, artifact_dir: str):
     d = _dir(artifact_dir)
-    p = d / "submission.csv"
+    p = d / "BiLSTM_submission.csv" 
     sub.to_csv(p, index=False)
-    _upload(run, _SUB, "predictions", "Final submission",
-            {p: "submission.csv"}, {"n_rows": len(sub)})
+    _upload(
+        run,
+        _SUB,
+        "predictions",
+        "Final submission",
+        {p: "BiLSTM_submission.csv"},  
+        {"n_rows": len(sub)}
+    )
