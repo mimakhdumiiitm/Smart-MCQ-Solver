@@ -1,130 +1,249 @@
 # src/DeBERTa/model.py
 """
-DeBERTa-v3 MCQ model — fixed dtype handling.
+DeBERTa-v3-small MCQ model.
 
-Root cause of original bugs
-────────────────────────────
-1. bf16 autocast makes encoder output (cls) bf16
-2. Head Linear layers stay fp32 (PyTorch default)
-3. cls @ head.weight → dtype mismatch → RuntimeError at inference
-4. During training the autocast context handled it silently but
-   produced nan loss when loss tensor was read via .item()
+Architecture
+────────────
+  Shared DeBERTa encoder  (one forward per option, weights shared)
+  → Pooling  (mean / cls / attention-weighted)
+  → Option-pair interaction layer   ← NEW: attends across all 5 options
+  → Scalar scorer per option
+  → logits [B, 5]
 
-Fix: explicitly cast cls → fp32 before the head.
-     Head always runs in fp32 regardless of autocast context.
+Option Interaction Layer
+────────────────────────
+After getting one rep per option, we apply a small cross-option
+transformer so the model learns "option A is better than B given C".
+This is the key addition over naive independent scoring.
 """
 
-import logging
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from transformers import AutoModel, AutoConfig
 
-logger = logging.getLogger("DeBERTa.Model")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Pooling heads
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MeanPooling(nn.Module):
+    """Mean of non-padding token representations."""
+    def forward(self, last_hidden: torch.Tensor,
+                mask: torch.Tensor) -> torch.Tensor:
+        m     = mask.unsqueeze(-1).float()          # [B, L, 1]
+        summed = (last_hidden * m).sum(dim=1)       # [B, H]
+        count  = m.sum(dim=1).clamp(min=1e-9)       # [B, 1]
+        return summed / count                        # [B, H]
+
+
+class CLSPooling(nn.Module):
+    def forward(self, last_hidden: torch.Tensor,
+                mask: torch.Tensor) -> torch.Tensor:
+        return last_hidden[:, 0, :]                 # [B, H]
+
+
+class AttentionPooling(nn.Module):
+    """Trainable context-vector attention over token representations."""
+    def __init__(self, hidden: int):
+        super().__init__()
+        self.attn = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            nn.Tanh(),
+            nn.Linear(hidden // 2, 1, bias=False),
+        )
+
+    def forward(self, last_hidden: torch.Tensor,
+                mask: torch.Tensor) -> torch.Tensor:
+        scores = self.attn(last_hidden).squeeze(-1)  # [B, L]
+        scores = scores.masked_fill(mask == 0, -1e9)
+        w      = F.softmax(scores, dim=-1).unsqueeze(1)  # [B, 1, L]
+        return torch.bmm(w, last_hidden).squeeze(1)      # [B, H]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cross-option interaction — small single-head transformer block
+# ─────────────────────────────────────────────────────────────────────────────
+
+class OptionInteraction(nn.Module):
+    """
+    Takes [B, 5, H] option representations and lets options
+    attend to each other before scoring.
+    Very lightweight: 1 attention head + FFN.
+
+    Why this helps
+    ──────────────
+    MCQ is inherently comparative — the correct option must be
+    distinguished from distractors. Pure independent scoring misses
+    inter-option relationships.
+    """
+
+    def __init__(self, hidden: int, dropout: float = 0.1):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(hidden)
+        self.norm2 = nn.LayerNorm(hidden)
+        self.attn  = nn.MultiheadAttention(
+            embed_dim   = hidden,
+            num_heads   = 1,          # single head — options sequence is short (5)
+            dropout     = dropout,
+            batch_first = True,
+        )
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden, hidden * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden * 2, hidden),
+        )
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x : [B, 5, H]
+        returns: [B, 5, H]
+        """
+        # self-attention across the 5 options
+        attn_out, _ = self.attn(x, x, x)
+        x           = self.norm1(x + self.drop(attn_out))
+        # position-wise FFN
+        x           = self.norm2(x + self.drop(self.ffn(x)))
+        return x
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main model
+# ─────────────────────────────────────────────────────────────────────────────
 
 class MCQDeBERTa(nn.Module):
     """
-    Fine-tunes DeBERTa-v3 for 5-way MCQ.
+    DeBERTa-v3-small MCQ scorer with cross-option interaction.
 
-    Parameters
-    ──────────
-    model_name         : HuggingFace model id
-    classifier_dropout : dropout before the scoring head
-    freeze_layers      : freeze first N transformer layers (0 = train all)
+    Forward
+    ───────
+    input_ids      : [B, 5, L]
+    attention_mask : [B, 5, L]
+    token_type_ids : [B, 5, L]
+    → logits       : [B, 5]
     """
 
     def __init__(
         self,
-        model_name         : str   = "microsoft/deberta-v3-base",
-        classifier_dropout : float = 0.1,
-        freeze_layers      : int   = 0,
+        model_name    : str   = "microsoft/deberta-v3-small",
+        pooling       : str   = "mean",
+        hidden_dropout: float = 0.1,
+        use_grad_ckpt : bool  = True,
     ):
         super().__init__()
 
-        from transformers import AutoModel, AutoConfig
+        # ── 1. DeBERTa backbone ───────────────────────────────────────────────
+        cfg = AutoConfig.from_pretrained(
+            model_name,
+            hidden_dropout_prob          = hidden_dropout,
+            attention_probs_dropout_prob = hidden_dropout,
+            output_hidden_states         = False,
+        )
+        self.encoder = AutoModel.from_pretrained(model_name, config=cfg)
 
-        hf_config = AutoConfig.from_pretrained(model_name)
-        # do NOT set dropout in config — set it in head instead
-        # (config dropout sometimes ignored in DeBERTa-v3)
+        if use_grad_ckpt:
+            self.encoder.gradient_checkpointing_enable()
 
-        self.encoder = AutoModel.from_pretrained(
-            model_name, config=hf_config)
+        H = self.encoder.config.hidden_size   # 768 for deberta-v3-small
 
-        hidden = hf_config.hidden_size      # 768 for -base, 1024 for -large
+        # ── 2. Pooling ─────────────────────────────────────────────────────────
+        self.pooling_mode = pooling
+        if pooling == "mean":
+            self.pool = MeanPooling()
+        elif pooling == "cls":
+            self.pool = CLSPooling()
+        elif pooling == "attention":
+            self.pool = AttentionPooling(H)
+        else:
+            raise ValueError(f"Unknown pooling: {pooling}")
 
-        # ── classifier head — explicitly fp32 ────────────────────────────────
-        # Head MUST stay fp32. We cast encoder output to fp32 before feeding
-        # into head. This avoids the bf16/fp16 vs fp32 dtype mismatch.
+        # ── 3. Cross-option interaction ────────────────────────────────────────
+        self.option_interaction = OptionInteraction(H, dropout=hidden_dropout)
+
+        # ── 4. Classifier head ─────────────────────────────────────────────────
         self.head = nn.Sequential(
-            nn.Dropout(classifier_dropout),
-            nn.Linear(hidden, hidden // 2),
+            nn.Linear(H, H // 2),
             nn.GELU(),
-            nn.Dropout(classifier_dropout),
-            nn.LayerNorm(hidden // 2),
-            nn.Linear(hidden // 2, 1),
+            nn.Dropout(hidden_dropout),
+            nn.LayerNorm(H // 2),
+            nn.Linear(H // 2, 1),
         )
 
-        # force head to fp32 always
-        self.head = self.head.float()
+        self._init_weights()
 
-        self._init_head()
+    def _init_weights(self):
+        for m in [*list(self.head.modules()),
+                  *list(self.option_interaction.modules())]:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
-        if freeze_layers > 0:
-            self._freeze(freeze_layers)
+    # ── layer freeze / unfreeze helpers ───────────────────────────────────────
 
-        n_train = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        n_total = sum(p.numel() for p in self.parameters())
-        logger.info(
-            f"MCQDeBERTa | total={n_total:,}  trainable={n_train:,}")
+    def _transformer_layers(self):
+        enc = self.encoder
+        if hasattr(enc, 'encoder') and hasattr(enc.encoder, 'layer'):
+            return list(enc.encoder.layer)
+        return []
 
-    def _init_head(self):
-        for module in self.head.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                nn.init.zeros_(module.bias)
-
-    def _freeze(self, n_layers: int):
+    def freeze_backbone_layers(self, n: int):
+        """Freeze embeddings + bottom-n transformer layers."""
         for p in self.encoder.embeddings.parameters():
             p.requires_grad = False
 
-        layers = getattr(self.encoder, 'encoder', None)
-        if layers is not None:
-            layer_list = getattr(layers, 'layer', None)
-            if layer_list is not None:
-                for layer in layer_list[:n_layers]:
-                    for p in layer.parameters():
-                        p.requires_grad = False
+        for layer in self._transformer_layers()[:n]:
+            for p in layer.parameters():
+                p.requires_grad = False
 
-        frozen = sum(
-            p.numel() for p in self.parameters() if not p.requires_grad)
-        logger.info(f"Frozen params: {frozen:,}  "
-                    f"(first {n_layers} transformer layers + embeddings)")
+        frozen  = sum(not p.requires_grad for p in self.encoder.parameters())
+        total   = sum(1 for _ in self.encoder.parameters())
+        logger_msg = (
+            f"Frozen {frozen}/{total} backbone params "
+            f"(bottom-{n} layers + embeddings)"
+        )
+        import logging
+        logging.getLogger("DeBERTa.Model").info(logger_msg)
 
-    def forward(self, input_ids, attention_mask):
-        """
-        Parameters
-        ──────────
-        input_ids      : [B, N_options, L]
-        attention_mask : [B, N_options, L]
+    def unfreeze_top_layer(self) -> bool:
+        """Unfreeze the topmost still-frozen transformer layer."""
+        for layer in reversed(self._transformer_layers()):
+            if any(not p.requires_grad for p in layer.parameters()):
+                for p in layer.parameters():
+                    p.requires_grad = True
+                return True
+        return False
 
-        Returns
-        ───────
-        logits         : [B, N_options]  — always fp32
-        """
+    # ── forward ───────────────────────────────────────────────────────────────
+
+    def forward(
+        self,
+        input_ids      : torch.Tensor,   # [B, 5, L]
+        attention_mask : torch.Tensor,   # [B, 5, L]
+        token_type_ids : torch.Tensor,   # [B, 5, L]
+    ) -> torch.Tensor:                   # → [B, 5]
+
         B, N, L = input_ids.shape
 
-        ids  = input_ids     .view(B * N, L)
+        # ── encode all options jointly (flatten → encode → reshape) ───────────
+        iids = input_ids.view(B * N, L)
         mask = attention_mask.view(B * N, L)
+        tids = token_type_ids.view(B * N, L)
 
-        out = self.encoder(input_ids=ids, attention_mask=mask)
+        out         = self.encoder(
+            input_ids      = iids,
+            attention_mask = mask,
+            token_type_ids = tids,
+        )
+        last_hidden = out.last_hidden_state              # [B*5, L, H]
+        pooled      = self.pool(last_hidden, mask)       # [B*5, H]
 
-        # [B*N, hidden] — may be bf16/fp16 under autocast
-        cls = out.last_hidden_state[:, 0, :]
+        # ── cross-option interaction ──────────────────────────────────────────
+        pooled = pooled.view(B, N, -1)                   # [B, 5, H]
+        pooled = self.option_interaction(pooled)         # [B, 5, H]
 
-        # ── CRITICAL FIX: cast to fp32 before head ────────────────────────────
-        # Head weights are always fp32. If cls is bf16/fp16 (from autocast),
-        # the matmul would crash or silently NaN. Casting here is safe and
-        # cheap — only the [B*N, hidden] tensor is cast, not the whole model.
-        cls = cls.float()
-
-        logits = self.head(cls).view(B, N)   # [B, N]  fp32
+        # ── score each option ─────────────────────────────────────────────────
+        logits = self.head(pooled).squeeze(-1)           # [B, 5]
         return logits

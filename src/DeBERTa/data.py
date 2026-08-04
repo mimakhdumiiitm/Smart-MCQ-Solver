@@ -1,100 +1,266 @@
 # src/DeBERTa/data.py
 """
-Data utilities for DeBERTa-v3.
+Data pipeline for DeBERTa-v3 MCQ.
 
-Key differences from BiLSTM:
-  • Uses HuggingFace tokenizer instead of a hand-built Vocabulary
-  • Each (question, option) pair is encoded as a single [CLS] ... [SEP] sequence
-  • Returns input_ids, attention_mask, token_type_ids  (no lengths needed)
-  • Deduplication / fingerprinting / BoW audit are IDENTICAL to BiLSTM
+Changes vs BoW version
+───────────────────────
+  - SemanticDeduplicator  uses SBERTEmbedder instead of BagOfWordsEncoder
+  - normalize_text        keeps original casing (DeBERTa is cased)
+  - Everything else identical
 """
 
+import re
+import hashlib
 import logging
-from torch.utils.data import Dataset
-import torch
+from typing import List, Dict
 
-# ── reuse BiLSTM helpers verbatim ────────────────────────────────────────────
-from src.BiLSTM.data import (
-    normalize_text,
-    canonical_fingerprint,
-    option_set_fingerprint,
-    BagOfWordsEncoder,
-    SemanticDeduplicator,       # same BoW + Agglomerative pipeline
-    ANSWER_LABELS,
-    LABEL_TO_IDX,
-)
+import numpy as np
+import pandas as pd
+import torch
+from sklearn.cluster import AgglomerativeClustering
+from torch.utils.data import Dataset
+from transformers import AutoTokenizer
+
+from src.DeBERTa.embedder import SBERTEmbedder
 
 logger = logging.getLogger("DeBERTa.Data")
 
+ANSWER_LABELS = ['A', 'B', 'C', 'D', 'E']
+LABEL_TO_IDX  = {l: i for i, l in enumerate(ANSWER_LABELS)}
+IDX_TO_LABEL  = {i: l for l, i in LABEL_TO_IDX.items()}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tokenizer factory
+# 1. Text Normalization
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_tokenizer(model_name: str):
+_INSTRUCTION_RE = re.compile(
+    r"""
+    (pick\s+the\s+best(\s+possible)?\s+answer\s*[:\-]?\s*)      |
+    (determine\s+the(\s+correct)?\s+option\s*[:\-]?\s*)         |
+    (select\s+the(\s+most\s+accurate)?\s+option\s*[:\-]?\s*)    |
+    (choose\s+the(\s+correct)?\s+answer\s*[:\-]?\s*)            |
+    (identify\s+the(\s+best)?\s+answer\s*[:\-]?\s*)             |
+    (what\s+is\s+the\s+best\s+answer\s*[:\-]?\s*)               |
+    (which\s+of\s+the\s+following\s+is\s+correct\s*[:\-]?\s*)   |
+    (among\s+the\s+(listed\s+)?options\.?\s*)                    |
+    (from\s+the(\s+options)?\s+given\.?\s*)                      |
+    (answer\s+the\s+following(\s+question)?\s*[:\-]?\s*)         |
+    (the\s+correct\s+answer\s+is\s*[:\-]?\s*)
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+_CONTRACTIONS = {
+    "can't": "cannot",      "won't": "will not",
+    "n't":   " not",        "'re":   " are",
+    "'ve":   " have",       "'ll":   " will",
+    "'d":    " would",      "'m":    " am",
+    "it's":  "it is",       "that's":"that is",
+    "there's":"there is",   "they're":"they are",
+    "we're": "we are",      "you're":"you are",
+    "i'm":   "i am",
+}
+
+
+def normalize_text(text: str, lowercase: bool = False) -> str:
     """
-    Returns a DeBERTa-v3 tokenizer.
-    Uses AutoTokenizer so the same call works for -small / -base / -large.
+    Strip instruction boilerplate, expand contractions, clean whitespace.
+    DeBERTa is cased → keep_case=True by default.
+    SBERT dedup uses lowercase=True for better matching.
     """
-    from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained(model_name)
-    logger.info(f"Tokenizer loaded: {model_name}  "
-                f"(vocab={tok.vocab_size:,})")
-    return tok
+    if not isinstance(text, str):
+        text = str(text)
+    text = _INSTRUCTION_RE.sub(' ', text)
+    if lowercase:
+        text = text.lower()
+        for c, e in _CONTRACTIONS.items():
+            text = text.replace(c, e)
+        text = re.sub(r'[^\w\s\-]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dataset
+# 2. Fingerprinting  (exact dedup — unchanged)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def canonical_fingerprint(row: pd.Series) -> str:
+    """Option-order-invariant MD5 of question + sorted options."""
+    q    = normalize_text(str(row.get('prompt', '')), lowercase=True)
+    opts = sorted(
+        normalize_text(str(row.get(l, '')), lowercase=True)
+        for l in ANSWER_LABELS
+    )
+    return hashlib.md5(
+        (q + ' ||| ' + ' || '.join(opts)).encode()
+    ).hexdigest()
+
+
+def option_set_fingerprint(row: pd.Series) -> str:
+    """MD5 of sorted option texts only."""
+    opts = sorted(
+        normalize_text(str(row.get(l, '')), lowercase=True)
+        for l in ANSWER_LABELS
+    )
+    return hashlib.md5((' || '.join(opts)).encode()).hexdigest()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Semantic Deduplicator  — SBERT + AgglomerativeClustering
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SemanticDeduplicator:
+    """
+    Three-stage deduplication:
+
+    Stage A  Exact fingerprint dedup  (MD5 of Q + sorted options)
+    Stage B  SBERT encode questions   →  384-dim L2-normed vectors
+    Stage C  AgglomerativeClustering  (cosine distance = 1 - cosine sim)
+             → semantic_group label for GroupShuffleSplit
+
+    Parameters
+    ──────────
+    sbert_model    : sentence-transformers model name
+    sbert_batch_sz : batch size for SBERT encoding
+    sim_threshold  : cosine similarity above which two Qs are near-duplicates
+    device         : "cuda" | "cpu"
+    """
+
+    def __init__(
+        self,
+        sbert_model    : str   = "sentence-transformers/all-MiniLM-L6-v2",
+        sbert_batch_sz : int   = 256,
+        sim_threshold  : float = 0.85,
+        device         : str   = None,
+    ):
+        self.sim_threshold = sim_threshold
+        self.embedder = SBERTEmbedder(
+            model_name = sbert_model,
+            batch_size = sbert_batch_sz,
+            device     = device,
+            normalize  = True,    # L2-norm → dot == cosine
+        )
+
+    def fit_transform(self, df: pd.DataFrame):
+        """
+        Returns
+        ───────
+        dedup_df       : pd.DataFrame  with exact_fp, option_fp,
+                                       semantic_group columns added
+        sbert_matrix   : np.ndarray    [n_rows, 384]  L2-normed SBERT vectors
+                                       aligned row-for-row with dedup_df
+        """
+        df = df.copy().reset_index(drop=True)
+
+        # ── Stage A: exact fingerprint ────────────────────────────────────────
+        df['exact_fp']  = df.apply(canonical_fingerprint,  axis=1)
+        df['option_fp'] = df.apply(option_set_fingerprint, axis=1)
+        n_before = len(df)
+        df = (df.drop_duplicates(subset='exact_fp', keep='first')
+                .reset_index(drop=True))
+        logger.info(f"Exact dedup: {n_before} → {len(df)} "
+                    f"(removed {n_before - len(df):,})")
+
+        # ── Stage B: SBERT embeddings ─────────────────────────────────────────
+        # use question text only for semantic clustering
+        q_texts = [
+            normalize_text(str(r.get('prompt', '')), lowercase=True)
+            for _, r in df.iterrows()
+        ]
+        sbert_matrix = self.embedder.encode(q_texts)  # [N, 384] float32
+
+        # ── Stage C: AgglomerativeClustering ──────────────────────────────────
+        logger.info(
+            f"Clustering {len(df):,} questions "
+            f"(sim_threshold={self.sim_threshold}) …"
+        )
+        clustering = AgglomerativeClustering(
+            n_clusters         = None,
+            distance_threshold = 1.0 - self.sim_threshold,
+            metric             = 'cosine',
+            linkage            = 'average',
+        )
+        labels               = clustering.fit_predict(sbert_matrix)
+        df['semantic_group'] = labels
+
+        n_clusters = len(np.unique(labels))
+        n_multi    = (pd.Series(labels).value_counts() > 1).sum()
+        logger.info(
+            f"Clusters: {n_clusters:,}  "
+            f"multi-member (near-dupes): {n_multi:,}"
+        )
+
+        return df, sbert_matrix
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. MCQ Dataset  — DeBERTa tokenization
 # ─────────────────────────────────────────────────────────────────────────────
 
 class MCQDataset(Dataset):
     """
-    One sample  →  5 encoded pairs (question+optionA … question+optionE).
+    Pre-tokenizes each (question, option) pair at construction time
+    for fast DataLoader throughput.
 
-    Encoding template per pair
-    ──────────────────────────
-    [CLS] <question_text> [SEP] <option_text> [SEP]
+    Input format per sample:
+        [CLS] question [SEP] option_text [SEP]
 
-    This is the standard single-sentence-pair format for DeBERTa / RoBERTa.
-    token_type_ids are zeros throughout (DeBERTa-v3 ignores segment IDs).
+    Output per sample:
+        input_ids      : [5, max_len]
+        attention_mask : [5, max_len]
+        token_type_ids : [5, max_len]
+        label          : int  (absent for test)
+        id             : any
     """
 
-    def __init__(self, df, tokenizer, max_len: int = 256,
-                 is_test: bool = False):
-        self.df        = df.reset_index(drop=True)
+    def __init__(
+        self,
+        df        : pd.DataFrame,
+        tokenizer ,
+        max_len   : int  = 128,
+        is_test   : bool = False,
+    ):
         self.tokenizer = tokenizer
         self.max_len   = max_len
         self.is_test   = is_test
-        self.data      = [self._process(i) for i in range(len(self.df))]
+        self.df        = df.reset_index(drop=True)
 
-    def _process(self, i: int) -> dict:
-        row = self.df.iloc[i]
-        q   = normalize_text(str(row.get('prompt', '')))
+        logger.info(f"Tokenizing {len(self.df):,} examples …")
+        self.data = [self._process(i) for i in range(len(self.df))]
+        logger.info("Tokenization complete.")
 
-        input_ids_list      = []
-        attention_mask_list = []
+    def _process(self, i: int) -> Dict:
+        row      = self.df.iloc[i]
+        question = normalize_text(str(row.get('prompt', '')))
+
+        all_input_ids      = []
+        all_attention_mask = []
+        all_token_type_ids = []
 
         for lbl in ANSWER_LABELS:
-            opt = normalize_text(str(row.get(lbl, '')))
-
-            # HuggingFace handles [CLS]/[SEP] insertion automatically
-            enc = self.tokenizer(
-                q,                          # text_a
-                opt,                        # text_b
-                max_length      = self.max_len,
-                padding         = 'max_length',
-                truncation      = True,
-                return_tensors  = 'pt',
+            option = normalize_text(str(row.get(lbl, '')))
+            enc    = self.tokenizer(
+                question,
+                option,
+                max_length     = self.max_len,
+                padding        = "max_length",
+                truncation     = True,
+                return_tensors = "pt",
             )
-            # squeeze the batch dim added by return_tensors='pt'
-            input_ids_list     .append(enc['input_ids'].squeeze(0))
-            attention_mask_list.append(enc['attention_mask'].squeeze(0))
+            all_input_ids.append(enc["input_ids"].squeeze(0))
+            all_attention_mask.append(enc["attention_mask"].squeeze(0))
+            ttids = enc.get("token_type_ids",
+                            torch.zeros(self.max_len, dtype=torch.long))
+            if hasattr(ttids, 'squeeze'):
+                ttids = ttids.squeeze(0)
+            all_token_type_ids.append(ttids)
 
         item = dict(
             id             = row.get('id', i),
-            # shape: [5, max_len]
-            input_ids      = torch.stack(input_ids_list),
-            attention_mask = torch.stack(attention_mask_list),
+            input_ids      = torch.stack(all_input_ids),       # [5, L]
+            attention_mask = torch.stack(all_attention_mask),  # [5, L]
+            token_type_ids = torch.stack(all_token_type_ids),  # [5, L]
         )
 
         if not self.is_test and 'answer' in row:
@@ -111,18 +277,12 @@ class MCQDataset(Dataset):
         return self.data[i]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Collate
-# ─────────────────────────────────────────────────────────────────────────────
-
-def collate_fn(batch: list) -> dict:
-    """
-    Stacks tensors; keeps id as a plain list (strings or ints).
-    """
+def collate_fn(batch: List[Dict]) -> Dict:
     out = dict(
         id             = [b['id']             for b in batch],
-        input_ids      = torch.stack([b['input_ids']       for b in batch]),
-        attention_mask = torch.stack([b['attention_mask']  for b in batch]),
+        input_ids      = torch.stack([b['input_ids']      for b in batch]),
+        attention_mask = torch.stack([b['attention_mask'] for b in batch]),
+        token_type_ids = torch.stack([b['token_type_ids'] for b in batch]),
     )
     if 'label' in batch[0]:
         out['label'] = torch.stack([b['label'] for b in batch])

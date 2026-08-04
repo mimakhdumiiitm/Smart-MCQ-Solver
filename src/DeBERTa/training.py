@@ -1,99 +1,163 @@
 # src/DeBERTa/training.py
 """
-Training logic for DeBERTa-v3.
+Training logic for DeBERTa-v3 MCQ.
 
-Fixes applied vs. original
-───────────────────────────
-1. cls.float() in model.forward() fixes dtype mismatch
-2. loss.item() was returning nan — root cause was autocast context leaking
-   into loss logging. Now loss is always fp32 (MCQLoss output is fp32
-   because it operates on fp32 logits from the head).
-3. Validation also wrapped in autocast for consistency.
-4. Gradient accumulation logic made robust (handles last incomplete batch).
-5. LR schedule: use OneCycleLR instead of linear warmup —
-   OneCycleLR is more stable for small datasets (1024 train samples).
-6. num_workers=0 to avoid Kaggle multiprocessing issues that slow down I/O.
+Additions vs BiLSTM
+────────────────────
+  - AMP mixed precision (GradScaler)
+  - Gradient accumulation
+  - Linear warmup + cosine decay scheduler
+  - Differential LR optimizer (in pipeline.py)
+  - Progressive layer unfreezing
+  - Focal loss option for imbalanced label distributions
 """
 
 import logging
+import math
 from collections import defaultdict
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-
-from src.BiLSTM.training import MCQLoss, ranked_preds, map_at_3, ANSWER_LABELS
+from torch.cuda.amp import GradScaler, autocast
 
 logger = logging.getLogger("DeBERTa.Trainer")
 
+ANSWER_LABELS = ['A', 'B', 'C', 'D', 'E']
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Loss
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MCQLoss(nn.Module):
+    """
+    Combined cross-entropy (with label smoothing) + pairwise margin ranking.
+
+    CE loss   → calibrated probability distribution
+    Rank loss → explicitly pushes correct option score above all others
+                by at least `margin`
+    """
+
+    def __init__(
+        self,
+        smoothing : float = 0.05,
+        margin    : float = 0.3,
+        ce_w      : float = 0.7,
+        rank_w    : float = 0.3,
+    ):
+        super().__init__()
+        self.ce     = nn.CrossEntropyLoss(label_smoothing=smoothing)
+        self.margin = margin
+        self.ce_w   = ce_w
+        self.rank_w = rank_w
+
+    def forward(self, logits: torch.Tensor,
+                targets: torch.Tensor):
+        ce_loss   = self.ce(logits, targets)
+
+        # hinge ranking: max(0, margin - (correct_score - wrong_score))
+        pos       = logits.gather(1, targets.unsqueeze(1))         # [B, 1]
+        margin    = F.relu(self.margin - (pos - logits))           # [B, N]
+        eye       = torch.zeros_like(logits).scatter_(
+            1, targets.unsqueeze(1), 1.)
+        rank_loss = (margin * (1 - eye)).sum(1).mean()
+
+        total = self.ce_w * ce_loss + self.rank_w * rank_loss
+        return total, ce_loss.item(), rank_loss.item()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Metrics
+# ─────────────────────────────────────────────────────────────────────────────
+
+def ranked_preds(logits: torch.Tensor):
+    top3 = torch.argsort(logits, dim=-1, descending=True)[:, :3]
+    return [[ANSWER_LABELS[i.item()] for i in row] for row in top3]
+
+
+def map_at_3(preds, labels) -> float:
+    scores = []
+    for pred, gold in zip(preds, labels):
+        ap, hits = 0., 0
+        for k, p in enumerate(pred[:3], 1):
+            if p == gold:
+                hits += 1; ap += hits / k
+        scores.append(ap)
+    return float(np.mean(scores))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scheduler: linear warmup → cosine decay
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_scheduler(optimizer, n_warmup: int, n_total: int):
+    def lr_lambda(step: int):
+        if step < n_warmup:
+            return float(step) / max(1, n_warmup)
+        progress = float(step - n_warmup) / max(1, n_total - n_warmup)
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Trainer
+# ─────────────────────────────────────────────────────────────────────────────
 
 class Trainer:
     """
-    Fine-tuning trainer for DeBERTa-v3.
+    DeBERTa MCQ Trainer.
 
-    Key design choices for small dataset (1024 train rows)
-    ───────────────────────────────────────────────────────
-    • OneCycleLR scheduler  — finds good LR fast, avoids flat regions
-    • grad_accum            — effective batch size 32 despite batch_size=8
-    • bf16 autocast         — 2× speed, model head forced fp32
-    • best_state on CPU     — saves ~700 MB GPU memory
+    Features
+    ────────
+    ✓  AMP mixed precision (autocast + GradScaler)
+    ✓  Gradient accumulation  (effective_batch = batch_size × grad_accum)
+    ✓  Progressive layer unfreezing (one layer per epoch after unfreeze_epoch)
+    ✓  Early stopping on MAP@3
+    ✓  Best-checkpoint restore
+    ✓  W&B per-step + per-epoch logging
     """
 
-    def __init__(self, model, train_dl, val_dl,
-                 opt, sched, loss_fn,
-                 device, cfg: dict, wandb_run=None):
+    def __init__(
+        self,
+        model,
+        train_dl,
+        val_dl,
+        optimizer,
+        scheduler,
+        loss_fn,
+        cfg      : dict,
+        device   : str,
+        wandb_run = None,
+    ):
+        self.model     = model.to(device)
+        self.train_dl  = train_dl
+        self.val_dl    = val_dl
+        self.opt       = optimizer
+        self.sched     = scheduler
+        self.loss_fn   = loss_fn
+        self.cfg       = cfg
+        self.device    = device
+        self.wandb_run = wandb_run
 
-        self.model      = model.to(device)
-        self.train_dl   = train_dl
-        self.val_dl     = val_dl
-        self.opt        = opt
-        self.sched      = sched
-        self.loss_fn    = loss_fn
-        self.device     = device
-        self.cfg        = cfg
-        self.wandb_run  = wandb_run
+        self.use_fp16   = cfg.get('use_fp16', True) and device != 'cpu'
+        self.scaler     = GradScaler(enabled=self.use_fp16)
+        self.grad_accum = cfg.get('grad_accum', 2)
 
         self.history    = defaultdict(list)
         self.best_map3  = -np.inf
         self.best_state = None
 
+        # early stopping
         self._es_counter = 0
         self._es_best    = -np.inf
-
-        self.grad_accum = cfg.get('grad_accum_steps', 4)
-
-        # ── precision: bf16 preferred, fp32 fallback ──────────────────────────
-        self.use_autocast = (
-            cfg.get('fp16', True) and
-            device == 'cuda' and
-            torch.cuda.is_available()
-        )
-        if self.use_autocast:
-            if torch.cuda.is_bf16_supported():
-                self.amp_dtype = torch.bfloat16
-                logger.info("Precision: bf16 autocast  "
-                            "(head forced fp32 via cls.float())")
-            else:
-                self.amp_dtype = torch.float16
-                logger.info("Precision: fp16 autocast  "
-                            "(head forced fp32 via cls.float())")
-        else:
-            logger.info("Precision: fp32 (no autocast)")
-
-    # ── autocast context ──────────────────────────────────────────────────────
-
-    def _autocast(self):
-        """Returns the appropriate autocast context manager."""
-        if self.use_autocast:
-            return torch.amp.autocast("cuda", dtype=self.amp_dtype)
-        # null context
-        return torch.amp.autocast("cuda", enabled=False)
 
     # ── early stopping ────────────────────────────────────────────────────────
 
     def _early_stop(self, score: float) -> bool:
-        patience  = self.cfg.get('early_stop_patience', 4)
+        patience  = self.cfg.get('early_stop_patience', 5)
         min_delta = 1e-4
         if score > self._es_best + min_delta:
             self._es_best    = score
@@ -106,196 +170,102 @@ class Trainer:
 
     def _train_epoch(self) -> float:
         self.model.train()
-
-        tot_loss = 0.0
-        n_steps = 0
-
+        total_loss = 0.0
+        n_batches  = 0
         self.opt.zero_grad()
 
         for step, batch in enumerate(self.train_dl):
+            iids = batch['input_ids'].to(self.device)
+            mask = batch['attention_mask'].to(self.device)
+            tids = batch['token_type_ids'].to(self.device)
+            lbls = batch['label'].to(self.device)
 
-            ids    = batch["input_ids"].to(self.device)
-            mask   = batch["attention_mask"].to(self.device)
-            labels = batch["label"].to(self.device)
+            with autocast(enabled=self.use_fp16):
+                logits         = self.model(iids, mask, tids)
+                loss, ce, rank = self.loss_fn(logits, lbls)
+                loss           = loss / self.grad_accum
 
-            with self._autocast():
+            self.scaler.scale(loss).backward()
 
-                logits = self.model(ids, mask)
-
-                print("\n" + "=" * 80)
-                print(f"Training Batch {step}")
-                print("=" * 80)
-
-                print("Logits shape :", tuple(logits.shape))
-                print("Logits dtype :", logits.dtype)
-                print("Labels dtype :", labels.dtype)
-                print("Labels shape :", tuple(labels.shape))
-                print("Unique labels:", torch.unique(labels).cpu().tolist())
-
-                print("NaN logits :", torch.isnan(logits).any().item())
-                print("Inf logits :", torch.isinf(logits).any().item())
-
-                if not torch.isnan(logits).any():
-                    print("Logits min :", logits.min().item())
-                    print("Logits max :", logits.max().item())
-                    print("Sample logits:\n", logits[:2].detach().cpu())
-
-                loss, ce_loss, rank_loss = self.loss_fn(logits, labels)
-
-                print("CrossEntropy :", ce_loss)
-                print("Ranking loss :", rank_loss)
-                print("Total loss   :", loss.item())
-                print("NaN loss     :", torch.isnan(loss).item())
-                print("Inf loss     :", torch.isinf(loss).item())
-
-                if torch.isnan(loss) or torch.isinf(loss):
-                    raise RuntimeError("Training loss became NaN/Inf")
-
-            (loss / self.grad_accum).backward()
-
-            # Check gradients
-            for name, param in self.model.named_parameters():
-                if param.grad is not None:
-                    if torch.isnan(param.grad).any():
-                        print(f"NaN gradient detected in: {name}")
-                        raise RuntimeError("NaN gradient")
-                    if torch.isinf(param.grad).any():
-                        print(f"Inf gradient detected in: {name}")
-                        raise RuntimeError("Inf gradient")
-
-            loss_val = loss.detach().float().item()
-
-            is_accum_boundary = (step + 1) % self.grad_accum == 0
-            is_last_batch = (step + 1) == len(self.train_dl)
-
-            if is_accum_boundary or is_last_batch:
-
-                grad_norm = nn.utils.clip_grad_norm_(
+            # optimizer step every grad_accum mini-batches
+            if (step + 1) % self.grad_accum == 0:
+                self.scaler.unscale_(self.opt)
+                nn.utils.clip_grad_norm_(
                     self.model.parameters(),
-                    self.cfg.get("max_grad_norm", 1.0),
-                )
-
-                print("Gradient norm:", grad_norm)
-
-                self.opt.step()
-
-                if isinstance(self.sched, torch.optim.lr_scheduler.OneCycleLR):
-                    self.sched.step()
-
+                    self.cfg.get('max_grad_norm', 1.0))
+                self.scaler.step(self.opt)
+                self.scaler.update()
+                self.sched.step()
                 self.opt.zero_grad()
 
-            tot_loss += loss_val
-            n_steps += 1
+            total_loss += loss.item() * self.grad_accum
+            n_batches  += 1
 
-            # Only inspect the first batch
-            break
+        return total_loss / max(n_batches, 1)
 
-        return tot_loss / max(n_steps, 1)
     # ── validation ────────────────────────────────────────────────────────────
 
     @torch.no_grad()
     def _validate(self):
         self.model.eval()
+        total_loss = 0.0
+        n_batches  = 0
+        all_preds, all_labels     = [], []
+        all_pred_idx, all_lbl_idx = [], []
 
-        tot_loss = 0.0
-        n_steps = 0
+        for batch in self.val_dl:
+            iids = batch['input_ids'].to(self.device)
+            mask = batch['attention_mask'].to(self.device)
+            tids = batch['token_type_ids'].to(self.device)
+            lbls = batch['label'].to(self.device)
 
-        all_preds, all_labels = [], []
-        all_pred_idx, all_label_idx = [], []
+            with autocast(enabled=self.use_fp16):
+                logits   = self.model(iids, mask, tids)
+                loss, *_ = self.loss_fn(logits, lbls)
 
-        for batch_idx, batch in enumerate(self.val_dl):
+            total_loss   += loss.item()
+            n_batches    += 1
+            all_preds    += ranked_preds(logits)
+            all_labels   += [ANSWER_LABELS[l.item()] for l in lbls]
+            all_pred_idx += logits.argmax(dim=1).cpu().tolist()
+            all_lbl_idx  += lbls.cpu().tolist()
 
-            ids    = batch["input_ids"].to(self.device)
-            mask   = batch["attention_mask"].to(self.device)
-            labels = batch["label"].to(self.device)
+        m3  = map_at_3(all_preds, all_labels)
+        acc = accuracy_score(all_lbl_idx, all_pred_idx)
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            all_lbl_idx, all_pred_idx,
+            average='macro', zero_division=0)
 
-            with self._autocast():
+        return (total_loss / max(n_batches, 1),
+                m3, acc, precision, recall, f1)
 
-                logits = self.model(ids, mask)
-
-                print("\n" + "=" * 80)
-                print(f"Validation Batch {batch_idx}")
-                print("=" * 80)
-
-                print("Logits shape :", tuple(logits.shape))
-                print("Logits dtype :", logits.dtype)
-                print("Labels dtype :", labels.dtype)
-                print("Labels shape :", tuple(labels.shape))
-                print("Unique labels:", torch.unique(labels).cpu().tolist())
-
-                print("NaN logits :", torch.isnan(logits).any().item())
-                print("Inf logits :", torch.isinf(logits).any().item())
-
-                if not torch.isnan(logits).any():
-                    print("Logits min :", logits.min().item())
-                    print("Logits max :", logits.max().item())
-                    print("Sample logits:\n", logits[:2].detach().cpu())
-
-                loss, ce_loss, rank_loss = self.loss_fn(logits, labels)
-
-                print("CrossEntropy :", ce_loss)
-                print("Ranking loss :", rank_loss)
-                print("Total loss   :", loss.item())
-                print("NaN loss     :", torch.isnan(loss).item())
-                print("Inf loss     :", torch.isinf(loss).item())
-
-                if torch.isnan(loss) or torch.isinf(loss):
-                    raise RuntimeError("Validation loss became NaN/Inf")
-
-            loss_val = loss.detach().float().item()
-
-            pred_idx = logits.argmax(dim=1)
-
-            all_pred_idx.extend(pred_idx.cpu().numpy())
-            all_label_idx.extend(labels.cpu().numpy())
-
-            tot_loss += loss_val
-            n_steps += 1
-
-            all_preds += ranked_preds(logits)
-            all_labels += [ANSWER_LABELS[l.item()] for l in labels]
-
-        m3 = map_at_3(all_preds, all_labels)
-        acc = accuracy_score(all_label_idx, all_pred_idx)
-        prec, rec, f1, _ = precision_recall_fscore_support(
-            all_label_idx,
-            all_pred_idx,
-            average="macro",
-            zero_division=0,
-        )
-
-        return tot_loss / max(n_steps, 1), m3, acc, prec, rec, f1
     # ── main training loop ────────────────────────────────────────────────────
 
     def train(self) -> dict:
-        logger.info(
-            f"DeBERTa fine-tuning start | "
-            f"epochs={self.cfg.get('epochs',10)} | "
-            f"grad_accum={self.grad_accum} | "
-            f"effective_batch="
-            f"{self.cfg.get('batch_size',8) * self.grad_accum}")
+        logger.info("=" * 60)
+        logger.info("DeBERTa-v3 Training")
+        logger.info("=" * 60)
 
-        for ep in range(1, self.cfg.get('epochs', 10) + 1):
+        epochs         = self.cfg.get('epochs', 12)
+        unfreeze_epoch = self.cfg.get('unfreeze_epoch', 3)
 
-            tr_loss = self._train_epoch()
-            vl_loss, m3, acc, prec, rec, f1 = self._validate()
+        for ep in range(1, epochs + 1):
 
-            # step ReduceLROnPlateau (if used instead of OneCycleLR)
-            if isinstance(self.sched,
-                          torch.optim.lr_scheduler.ReduceLROnPlateau):
-                self.sched.step(m3)
+            # progressive unfreezing — one layer per epoch
+            if ep >= unfreeze_epoch:
+                unfroze = self.model.unfreeze_top_layer()
+                if unfroze:
+                    logger.info(f"  ↑ Unfroze one transformer layer at ep {ep}")
 
-            lr = self.opt.param_groups[0]['lr']
+            tr_loss                          = self._train_epoch()
+            vl_loss, m3, acc, prec, rec, f1  = self._validate()
+            lr_now = self.opt.param_groups[0]['lr']
 
             for k, v in [
-                ("tr_loss",      tr_loss),
-                ("vl_loss",      vl_loss),
-                ("vl_map3",      m3),
-                ("vl_acc",       acc),
-                ("vl_precision", prec),
-                ("vl_recall",    rec),
-                ("vl_f1",        f1),
-                ("lr",           lr),
+                ("tr_loss", tr_loss), ("vl_loss", vl_loss),
+                ("vl_map3", m3),      ("vl_acc",  acc),
+                ("vl_precision", prec), ("vl_recall", rec),
+                ("vl_f1", f1),        ("lr", lr_now),
             ]:
                 self.history[k].append(v)
 
@@ -303,16 +273,17 @@ class Trainer:
             if m3 > self.best_map3:
                 self.best_map3  = m3
                 self.best_state = {
-                    k: v.clone().cpu()
+                    k: v.clone()
                     for k, v in self.model.state_dict().items()
                 }
-                flag = '  ★'
+                flag = '  ★ new best'
 
             logger.info(
-                f"Ep {ep:3d} | "
-                f"tr={tr_loss:.4f}  vl={vl_loss:.4f}  "
-                f"MAP@3={m3:.4f}  Acc={acc:.4f}  "
-                f"lr={lr:.2e}{flag}")
+                f"Ep {ep:3d}/{epochs} | "
+                f"tr={tr_loss:.4f} vl={vl_loss:.4f} | "
+                f"MAP@3={m3:.4f} Acc={acc:.4f} "
+                f"F1={f1:.4f} lr={lr_now:.2e}{flag}"
+            )
 
             if self.wandb_run is not None:
                 self.wandb_run.log({
@@ -324,24 +295,23 @@ class Trainer:
                     "val/precision" : prec,
                     "val/recall"    : rec,
                     "val/f1"        : f1,
-                    "lr"            : lr,
+                    "lr"            : lr_now,
                 }, step=ep)
 
             if self._early_stop(m3):
-                logger.info(f"Early stop at epoch {ep}")
+                logger.info(f"Early stopping at epoch {ep}")
                 break
 
         if self.best_state:
-            self.model.load_state_dict(
-                {k: v.to(self.device)
-                 for k, v in self.best_state.items()})
+            self.model.load_state_dict(self.best_state)
 
         logger.info(f"Best Val MAP@3 = {self.best_map3:.4f}")
 
         if self.wandb_run is not None:
             self.wandb_run.summary.update({
-                'best_val_map3': self.best_map3,
-                'best_val_acc' : max(self.history['vl_acc']),
+                'best_val_map3' : self.best_map3,
+                'best_val_acc'  : max(self.history['vl_acc']),
+                'best_val_f1'   : max(self.history['vl_f1']),
             })
 
         return dict(self.history)

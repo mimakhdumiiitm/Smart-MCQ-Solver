@@ -1,13 +1,6 @@
 # src/DeBERTa/artifacts.py
 """
-W&B artifact helpers for DeBERTa.
-
-Differences vs. BiLSTM artifacts.py
-────────────────────────────────────
-• Model checkpoint saved as  deberta_best.pt
-• No Vocabulary artifact  (tokenizer comes from HuggingFace hub)
-• Tokenizer saved locally with save_pretrained  (for offline inference)
-• Everything else (dedup, audit, submission) reused verbatim
+W&B artifact helpers — SBERT matrix replaces BoW matrix.
 """
 
 import json
@@ -25,12 +18,10 @@ try:
 except ImportError:
     _W = False
 
-# ── artifact names (separate namespace from BiLSTM) ──────────────────────────
-_DEDUP = "mcq-dedup-data"          # shared with BiLSTM (same data)
+_DEDUP = "mcq-deberta-dedup-data"
 _MODEL = "mcq-deberta-model"
-_AUDIT = "mcq-deberta-audit"
+_AUDIT = "mcq-deberta-audit-report"
 _SUB   = "mcq-deberta-submission"
-_TOK   = "mcq-deberta-tokenizer"
 
 
 def _dir(path):
@@ -42,9 +33,8 @@ def _dir(path):
 def _upload(run, name, atype, desc, files: dict, meta: dict = None):
     if run is None or not _W:
         return
-    art = wandb.Artifact(
-        name=name, type=atype,
-        description=desc, metadata=meta or {})
+    art = wandb.Artifact(name=name, type=atype,
+                         description=desc, metadata=meta or {})
     for local, aname in files.items():
         art.add_file(str(local), name=aname)
     run.log_artifact(art)
@@ -64,49 +54,49 @@ def try_load(run, artifact_name: str, artifacts_load_dir: str):
         return None
 
 
-# ── reuse dedup helpers from BiLSTM ──────────────────────────────────────────
-# (same data, same BoW pipeline — no need to duplicate)
-
-from src.BiLSTM.artifacts import (
-    save_dedup, load_dedup,
-    save_audit,
-)
-
-
-# ── tokenizer ─────────────────────────────────────────────────────────────────
-
-def save_tokenizer(run, tokenizer, artifacts_save_dir: str, model_name: str):
-    """
-    Save tokenizer files locally AND upload to W&B.
-    Allows fully offline inference without HuggingFace hub.
-    """
-    d = _dir(Path(artifacts_save_dir) / "tokenizer")
-    tokenizer.save_pretrained(str(d))
-
-    files = {f: f.name for f in d.iterdir() if f.is_file()}
-    _upload(run, _TOK, "tokenizer",
-            f"DeBERTa tokenizer ({model_name})",
-            files, {"model_name": model_name})
+def save_dedup(run, df: pd.DataFrame,
+               sbert: np.ndarray, artifacts_save_dir: str):
+    d   = _dir(artifacts_save_dir)
+    csv = d / "dedup_train.csv"
+    npy = d / "sbert_matrix.npy"
+    df.to_csv(csv, index=False)
+    np.save(npy, sbert)
+    _upload(
+        run, _DEDUP, "dataset",
+        "Deduplicated data + SBERT embeddings",
+        {csv: "dedup_train.csv", npy: "sbert_matrix.npy"},
+        {"n_rows": len(df), "sbert_shape": list(sbert.shape)},
+    )
 
 
-def load_tokenizer_local(artifacts_load_dir: str):
-    from transformers import AutoTokenizer
-    d = Path(artifacts_load_dir) / "tokenizer"
-    tok = AutoTokenizer.from_pretrained(str(d))
-    logger.info(f"Tokenizer loaded from local cache: {d}")
-    return tok
+def load_dedup(artifacts_load_dir: str):
+    d     = Path(artifacts_load_dir)
+    df    = pd.read_csv(d / "dedup_train.csv")
+    sbert = np.load(d / "sbert_matrix.npy")
+    logger.info(f"Loaded dedup: {len(df)} rows, SBERT {sbert.shape}")
+    return df, sbert
 
 
-# ── model ─────────────────────────────────────────────────────────────────────
-
-def save_model(run, model, artifacts_save_dir: str, meta: dict = None):
+def save_model(run, model, tokenizer,
+               artifacts_save_dir: str, meta: dict = None):
     import torch
-    d = _dir(artifacts_save_dir)
-    p = d / "deberta_best.pt"
-    torch.save(model.state_dict(), p)
+    d    = _dir(artifacts_save_dir)
+    ckpt = d / "deberta_best.pt"
+    torch.save(model.state_dict(), ckpt)
+
+    hf_dir = d / "hf_model"
+    hf_dir.mkdir(exist_ok=True)
+    model.encoder.save_pretrained(str(hf_dir))
+    tokenizer.save_pretrained(str(hf_dir))
+
+    files = {ckpt: "deberta_best.pt"}
+    for f in hf_dir.rglob("*"):
+        if f.is_file():
+            files[f] = str(f.relative_to(d))
+
     _upload(run, _MODEL, "model",
-            "Best DeBERTa-v3 checkpoint",
-            {p: "deberta_best.pt"}, meta or {})
+            "DeBERTa-v3 best checkpoint", files, meta or {})
+    logger.info(f"Model saved to {d}")
 
 
 def load_model(model, artifacts_load_dir: str, device: str = "cpu"):
@@ -116,13 +106,27 @@ def load_model(model, artifacts_load_dir: str, device: str = "cpu"):
     return model.to(device)
 
 
-# ── submission ────────────────────────────────────────────────────────────────
+def save_audit(run, report: dict, artifacts_save_dir: str):
+    d = _dir(artifacts_save_dir)
+    p = d / "audit_report.json"
+
+    def _s(o):
+        if isinstance(o, dict):                       return {k: _s(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):              return [_s(v) for v in o]
+        if isinstance(o, set):                        return list(o)
+        if isinstance(o, (np.integer, np.floating)):  return o.item()
+        if isinstance(o, np.ndarray):                 return o.tolist()
+        return o
+
+    with open(p, "w") as f:
+        json.dump(_s(report), f, indent=2)
+    _upload(run, _AUDIT, "report",
+            "Leakage audit report", {p: "audit_report.json"})
+
 
 def save_submission(run, sub: pd.DataFrame, submission_dir: str):
     d = _dir(submission_dir)
     p = d / "DeBERTa_submission.csv"
     sub.to_csv(p, index=False)
-    _upload(run, _SUB, "predictions",
-            "DeBERTa final submission",
-            {p: "DeBERTa_submission.csv"},
-            {"n_rows": len(sub)})
+    _upload(run, _SUB, "predictions", "DeBERTa final submission",
+            {p: "DeBERTa_submission.csv"}, {"n_rows": len(sub)})
