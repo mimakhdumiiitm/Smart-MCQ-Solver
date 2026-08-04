@@ -275,6 +275,14 @@ def run(
         hidden_dropout = cfg.hidden_dropout,
         use_grad_ckpt  = cfg.use_grad_ckpt,
     )
+    print("Model dtype check:")
+    print("rel_embeddings:",model.encoder.encoder.rel_embeddings.weight.dtype)
+
+    print("embeddings:",
+        next(model.encoder.embeddings.parameters()).dtype)
+
+    print("first encoder layer:",
+        next(model.encoder.encoder.layer[0].parameters()).dtype)
     model.freeze_backbone_layers(cfg.freeze_layers)
 
     n_params    = sum(p.numel() for p in model.parameters())
