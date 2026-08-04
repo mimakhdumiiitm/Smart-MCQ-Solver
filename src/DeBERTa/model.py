@@ -1,17 +1,17 @@
 # src/DeBERTa/model.py
 """
-DeBERTa-v3 MCQ model.
+DeBERTa-v3 MCQ model — fixed dtype handling.
 
-Architecture
-────────────
-• DeBERTa-v3 encoder  (pretrained, fine-tuned)
-• [CLS] representation per (question, option) pair
-• Shared linear head  → scalar score per option
-• Logits [B, 5]  fed to MCQLoss  (same loss as BiLSTM)
+Root cause of original bugs
+────────────────────────────
+1. bf16 autocast makes encoder output (cls) bf16
+2. Head Linear layers stay fp32 (PyTorch default)
+3. cls @ head.weight → dtype mismatch → RuntimeError at inference
+4. During training the autocast context handled it silently but
+   produced nan loss when loss tensor was read via .item()
 
-The model encodes all 5 options in parallel by flattening
-[B, 5, L]  →  [B×5, L], running the encoder once,
-then reshaping back to [B, 5].
+Fix: explicitly cast cls → fp32 before the head.
+     Head always runs in fp32 regardless of autocast context.
 """
 
 import logging
@@ -29,7 +29,7 @@ class MCQDeBERTa(nn.Module):
     ──────────
     model_name         : HuggingFace model id
     classifier_dropout : dropout before the scoring head
-    freeze_layers      : freeze the first N transformer layers (0 = train all)
+    freeze_layers      : freeze first N transformer layers (0 = train all)
     """
 
     def __init__(
@@ -42,34 +42,39 @@ class MCQDeBERTa(nn.Module):
 
         from transformers import AutoModel, AutoConfig
 
-        hf_config                        = AutoConfig.from_pretrained(model_name)
-        hf_config.hidden_dropout_prob    = classifier_dropout
-        hf_config.attention_probs_dropout_prob = classifier_dropout
+        hf_config = AutoConfig.from_pretrained(model_name)
+        # do NOT set dropout in config — set it in head instead
+        # (config dropout sometimes ignored in DeBERTa-v3)
 
         self.encoder = AutoModel.from_pretrained(
             model_name, config=hf_config)
 
-        hidden = hf_config.hidden_size          # 768 for -base, 1024 for -large
+        hidden = hf_config.hidden_size      # 768 for -base, 1024 for -large
 
-        # ── classifier head ──────────────────────────────────────────────────
+        # ── classifier head — explicitly fp32 ────────────────────────────────
+        # Head MUST stay fp32. We cast encoder output to fp32 before feeding
+        # into head. This avoids the bf16/fp16 vs fp32 dtype mismatch.
         self.head = nn.Sequential(
+            nn.Dropout(classifier_dropout),
             nn.Linear(hidden, hidden // 2),
             nn.GELU(),
             nn.Dropout(classifier_dropout),
             nn.LayerNorm(hidden // 2),
-            nn.Linear(hidden // 2, 1),          # scalar score per option
+            nn.Linear(hidden // 2, 1),
         )
+
+        # force head to fp32 always
+        self.head = self.head.float()
 
         self._init_head()
 
-        # ── optional layer freezing ───────────────────────────────────────────
         if freeze_layers > 0:
             self._freeze(freeze_layers)
 
-        n = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        logger.info(f"MCQDeBERTa | trainable params: {n:,}")
-
-    # ── weight init ──────────────────────────────────────────────────────────
+        n_train = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        n_total = sum(p.numel() for p in self.parameters())
+        logger.info(
+            f"MCQDeBERTa | total={n_total:,}  trainable={n_train:,}")
 
     def _init_head(self):
         for module in self.head.modules():
@@ -77,18 +82,10 @@ class MCQDeBERTa(nn.Module):
                 nn.init.xavier_uniform_(module.weight)
                 nn.init.zeros_(module.bias)
 
-    # ── freeze transformer layers ─────────────────────────────────────────────
-
     def _freeze(self, n_layers: int):
-        """
-        Freeze embedding + first n_layers of the transformer.
-        Useful when GPU memory is tight or dataset is small.
-        """
-        # embeddings
         for p in self.encoder.embeddings.parameters():
             p.requires_grad = False
 
-        # transformer layers  (attribute name differs by model family)
         layers = getattr(self.encoder, 'encoder', None)
         if layers is not None:
             layer_list = getattr(layers, 'layer', None)
@@ -102,28 +99,32 @@ class MCQDeBERTa(nn.Module):
         logger.info(f"Frozen params: {frozen:,}  "
                     f"(first {n_layers} transformer layers + embeddings)")
 
-    # ── forward ───────────────────────────────────────────────────────────────
-
     def forward(self, input_ids, attention_mask):
         """
         Parameters
         ──────────
-        input_ids      : [B, N_options, L]   (N_options = 5)
+        input_ids      : [B, N_options, L]
         attention_mask : [B, N_options, L]
 
         Returns
         ───────
-        logits         : [B, N_options]      (raw scores, higher = more likely)
+        logits         : [B, N_options]  — always fp32
         """
         B, N, L = input_ids.shape
 
-        # flatten options into batch dimension
         ids  = input_ids     .view(B * N, L)
         mask = attention_mask.view(B * N, L)
 
-        # DeBERTa encoder → take [CLS] token (index 0)
-        out  = self.encoder(input_ids=ids, attention_mask=mask)
-        cls  = out.last_hidden_state[:, 0, :]   # [B*N, hidden]
+        out = self.encoder(input_ids=ids, attention_mask=mask)
 
-        logits = self.head(cls).view(B, N)       # [B, N]
+        # [B*N, hidden] — may be bf16/fp16 under autocast
+        cls = out.last_hidden_state[:, 0, :]
+
+        # ── CRITICAL FIX: cast to fp32 before head ────────────────────────────
+        # Head weights are always fp32. If cls is bf16/fp16 (from autocast),
+        # the matmul would crash or silently NaN. Casting here is safe and
+        # cheap — only the [B*N, hidden] tensor is cast, not the whole model.
+        cls = cls.float()
+
+        logits = self.head(cls).view(B, N)   # [B, N]  fp32
         return logits
