@@ -110,7 +110,13 @@ def run(train_path: str, test_path: str = None, cfg: Config = None):
     torch.cuda.manual_seed_all(cfg.seed)
 
     # ── W&B ──────────────────────────────────────────────────────────────────
-    wandb_run = init_wandb(cfg, run_name=cfg.wandb_run_name, model_tag="bilstm")
+    wandb_run = init_wandb(
+    config=Config,
+    run_name="BiLSTM",
+    model_name="BiLSTM",
+    group="scratch-models",
+    tags=["BiLSTM", "scratch", "baseline"]
+    )
 
     # ── 1. Load raw data ──────────────────────────────────────────────────────
     train_raw = _load(train_path)
