@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 logger = logging.getLogger("Trainer")
 
 ANSWER_LABELS = ['A', 'B', 'C', 'D', 'E']
@@ -114,24 +114,44 @@ class Trainer:
         self.model.eval()
         tot = n = 0
         all_preds, all_labels = [], []
+        all_pred_idx, all_label_idx = [], []
         for batch in self.val_dl:
             opts   = batch['options'].to(self.device)
             lens   = batch['lengths'].to(self.device)
             labels = batch['label'].to(self.device)
             logits = self.model(opts, lens)
+            pred_idx = logits.argmax(dim=1)
+            all_pred_idx.extend(pred_idx.cpu().numpy())
+            all_label_idx.extend(labels.cpu().numpy())
             loss, *_ = self.loss_fn(logits, labels)
             tot += loss.item(); n += 1
             all_preds  += ranked_preds(logits)
             all_labels += [ANSWER_LABELS[l.item()] for l in labels]
-        m3  = map_at_3(all_preds, all_labels)
-        acc = top1_acc(all_preds, all_labels)
-        return tot / max(n, 1), m3, acc
+        m3 = map_at_3(all_preds, all_labels)
+
+        acc = accuracy_score(all_label_idx, all_pred_idx)
+
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            all_label_idx,
+            all_pred_idx,
+            average="macro",
+            zero_division=0,
+        )
+
+        return (
+            tot / max(n,1),
+            m3,
+            acc,
+            precision,
+            recall,
+            f1,
+        )
 
     def train(self):
         logger.info("Training start")
         for ep in range(1, self.cfg.get('epochs', 40) + 1):
             tr_loss          = self._train_epoch()
-            vl_loss, m3, acc = self._validate()
+            vl_loss, m3, acc, precision, recall, f1 = self._validate()
 
             if isinstance(self.sched,
                           torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -140,8 +160,16 @@ class Trainer:
                 self.sched.step()
 
             lr = self.opt.param_groups[0]['lr']
-            for k, v in [('tr_loss', tr_loss), ('vl_loss', vl_loss),
-                         ('vl_map3', m3), ('vl_acc', acc), ('lr', lr)]:
+            for k, v in [
+                ("tr_loss", tr_loss),
+                ("vl_loss", vl_loss),
+                ("vl_map3", m3),
+                ("vl_acc", acc),
+                ("vl_precision", precision),
+                ("vl_recall", recall),
+                ("vl_f1", f1),
+                ("lr", lr),
+            ]:
                 self.history[k].append(v)
 
             flag = ''
@@ -156,11 +184,16 @@ class Trainer:
 
             if self.wandb_run is not None:
                 self.wandb_run.log({
-                    "epoch": ep, "train/loss": tr_loss,
-                    "val/loss": vl_loss, "val/map3": m3,
-                    "val/acc": acc, "lr": lr,
+                    "epoch": ep,
+                    "train/loss": tr_loss,
+                    "val/loss": vl_loss,
+                    "val/map3": m3,
+                    "val/acc": acc,
+                    "val/precision": precision,
+                    "val/recall": recall,
+                    "val/f1": f1,
+                    "lr": lr,
                 }, step=ep)
-
             if self._early_stop(m3):
                 logger.info(f"Early stop at epoch {ep}"); break
 

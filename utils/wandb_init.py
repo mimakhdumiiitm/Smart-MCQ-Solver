@@ -3,7 +3,7 @@
 import logging
 from typing import Optional, Dict, Any, List
 
-from config.config import Config
+from config.BiLSTM_config import Config
 
 logger = logging.getLogger("WandB")
 
@@ -21,7 +21,6 @@ REQUIRED_METRICS: List[str] = [
     "map_at_k",
 ]
 
-COMPARABLE_MODELS: List[str] = ["tfidf", "word2vec", "sbert"]
 
 
 def authenticate() -> None:                          # ← now PUBLIC (no underscore)
@@ -69,13 +68,14 @@ _authenticate = authenticate
 
 
 def init_wandb(
-    config   : Config,
-    run_name : str = "phase1-baseline",
-    model_tag: str = "tfidf",
+    config: Config,
+    run_name: str,
+    model_name: str,
+    group: str = "model-comparison",
+    tags: Optional[List[str]] = None,
 ) -> Optional[object]:
     """
     Initialise a single W&B run for one model.
-    model_tag must be one of: tfidf, word2vec, sbert
     """
     if not _WANDB_AVAILABLE:
         logger.warning("wandb not installed — skipping.")
@@ -86,33 +86,29 @@ def init_wandb(
         return None
 
     try:
-        authenticate()                               # ← uses the safe version
+        authenticate()
 
         run_config: Dict[str, Any] = {
-            "model"              : model_tag,
-            "top_k"              : config.top_k,
-            "seed"               : config.seed,
-            "device"             : config.device,
-            "n_gpus"             : config.n_gpus,
-            "sbert_model"        : config.sbert_model,
-            "tfidf_max_features" : config.tfidf_max_features,
-            "tfidf_ngram_range"  : config.tfidf_ngram_range,
-            "w2v_vector_size"    : config.w2v_vector_size,
+            "model": model_name,
+            "top_k": config.top_k,
+            "seed": config.seed,
+            "device": config.device,
+            "n_gpus": config.n_gpus,
             **{m: None for m in REQUIRED_METRICS},
         }
 
         run = wandb.init(
-            project  = config.wandb_project,
-            entity   = config.wandb_entity,
-            name     = run_name,
-            config   = run_config,
-            group    = "phase1-model-comparison",
-            job_type = model_tag,
-            reinit   = True,
-            tags     = ["phase1", "baseline", model_tag],
+            project=config.wandb_project,
+            entity=config.wandb_entity,
+            name=run_name,
+            config=run_config,
+            group=group,
+            job_type=model_name,
+            reinit=True,
+            tags=tags or [model_name],
         )
 
-        logger.info(f"W&B run | model={model_tag} | url={run.url}")
+        logger.info(f"W&B run | model={model_name} | url={run.url}")
         return run
 
     except Exception as exc:
