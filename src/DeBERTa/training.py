@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 
 logger = logging.getLogger("DeBERTa.Trainer")
 
@@ -171,38 +171,53 @@ class Trainer:
     def _train_epoch(self) -> float:
         self.model.train()
         total_loss = 0.0
-        n_batches  = 0
+        n_batches = 0
+
         self.opt.zero_grad()
 
         for step, batch in enumerate(self.train_dl):
-            iids = batch['input_ids'].to(self.device)
-            mask = batch['attention_mask'].to(self.device)
-            tids = batch['token_type_ids'].to(self.device)
-            lbls = batch['label'].to(self.device)
+            iids = batch["input_ids"].to(self.device)
+            mask = batch["attention_mask"].to(self.device)
+            tids = batch["token_type_ids"].to(self.device)
+            lbls = batch["label"].to(self.device)
 
             with autocast(enabled=self.use_fp16):
-                logits         = self.model(iids, mask, tids)
+                logits = self.model(iids, mask, tids)
                 loss, ce, rank = self.loss_fn(logits, lbls)
-                loss           = loss / self.grad_accum
+                loss = loss / self.grad_accum
 
             self.scaler.scale(loss).backward()
 
             # optimizer step every grad_accum mini-batches
             if (step + 1) % self.grad_accum == 0:
+
+                # ---------------- DEBUG ----------------
+                for name, p in self.model.named_parameters():
+                    if p.grad is not None and p.grad.dtype != torch.float32:
+                        print("=" * 60)
+                        print(f"BAD GRADIENT -> {name}")
+                        print(f"Parameter dtype : {p.dtype}")
+                        print(f"Gradient dtype  : {p.grad.dtype}")
+                        print("=" * 60)
+                        raise RuntimeError("Non-FP32 gradient found")
+                # ---------------------------------------
+
                 self.scaler.unscale_(self.opt)
+
                 nn.utils.clip_grad_norm_(
                     self.model.parameters(),
-                    self.cfg.get('max_grad_norm', 1.0))
+                    self.cfg.get("max_grad_norm", 1.0),
+                )
+
                 self.scaler.step(self.opt)
                 self.scaler.update()
                 self.sched.step()
                 self.opt.zero_grad()
 
             total_loss += loss.item() * self.grad_accum
-            n_batches  += 1
+            n_batches += 1
 
         return total_loss / max(n_batches, 1)
-
     # ── validation ────────────────────────────────────────────────────────────
 
     @torch.no_grad()
