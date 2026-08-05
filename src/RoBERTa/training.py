@@ -216,10 +216,10 @@ class Trainer:
 
         # autocast context: active for FP16, identity context for FP32
         self._autocast = (
-            lambda: autocast(device_type="cuda", enabled=True)
+            autocast(device_type="cuda", enabled=True)
             if self.use_fp16
-            else contextlib.nullcontext
-        )()
+            else contextlib.nullcontext()
+        )
 
     # ── early stopping ────────────────────────────────────────────────────────
 
@@ -324,10 +324,10 @@ class Trainer:
             tids = batch["token_type_ids"].to(self.device)
             lbls = batch["label"].to(self.device)
 
-            with self._autocast:
-                logits         = self.model(iids, mask, tids)
+            with self._autocast():
+                logits = self.model(iids, mask, tids)
                 loss, ce, rank = self.loss_fn(logits, lbls)
-                loss           = loss / self.grad_accum
+                loss = loss / self.grad_accum
 
             self.scaler.scale(loss).backward()
 
@@ -369,8 +369,8 @@ class Trainer:
             tids = batch["token_type_ids"].to(self.device)
             lbls = batch["label"].to(self.device)
 
-            with self._autocast:
-                logits   = self.model(iids, mask, tids)
+            with self._autocast():
+                logits = self.model(iids, mask, tids)
                 loss, *_ = self.loss_fn(logits, lbls)
 
             total_loss   += loss.item()
