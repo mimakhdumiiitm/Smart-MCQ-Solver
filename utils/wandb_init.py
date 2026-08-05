@@ -1,9 +1,11 @@
 # utils/wandb_init.py
+"""
+W&B helpers — model-agnostic version.
+Accepts any config object that has the required attributes.
+"""
 
 import logging
 from typing import Optional, Dict, Any, List
-
-from config.BiLSTM_config import Config
 
 logger = logging.getLogger("WandB")
 
@@ -22,20 +24,18 @@ REQUIRED_METRICS: List[str] = [
 ]
 
 
-
-def authenticate() -> None:                          # ← now PUBLIC (no underscore)
+def authenticate() -> None:
     """
     Authenticate with W&B.
     Priority:
       1. Kaggle Secrets  (WANDB_API_KEY)
-      2. WANDB_API_KEY   environment variable        (wandb picks it up automatically)
-      3. ~/.netrc        (already-logged-in machine)
+      2. WANDB_API_KEY   environment variable
+      3. ~/.netrc
     Never falls back to interactive prompt.
     """
     if not _WANDB_AVAILABLE:
         return
 
-    # ── 1. Kaggle Secrets ────────────────────────────────────────────────────
     try:
         from kaggle_secrets import UserSecretsClient
         key = UserSecretsClient().get_secret("WANDB_API_KEY")
@@ -44,44 +44,37 @@ def authenticate() -> None:                          # ← now PUBLIC (no unders
             logger.info("W&B authenticated via Kaggle Secrets.")
             return
     except Exception:
-        pass  # not on Kaggle, or secret not set
+        pass
 
-    # ── 2. Env var / netrc (non-interactive) ─────────────────────────────────
     try:
-        # anonymous=False  → use existing creds or env-var key
-        # force=False      → don't re-prompt if already logged in
         result = wandb.login(anonymous="never", relogin=False)
         if result:
             logger.info("W&B authenticated via env var / netrc.")
         else:
             logger.warning(
                 "W&B login returned False. "
-                "Set the WANDB_API_KEY environment variable or add the key "
-                "to Kaggle Secrets as 'WANDB_API_KEY'."
+                "Set WANDB_API_KEY in environment or Kaggle Secrets."
             )
     except Exception as exc:
         logger.warning(f"W&B login failed: {exc}")
 
 
-# Keep old private name as an alias so nothing else breaks
-_authenticate = authenticate
+_authenticate = authenticate   # backward-compat alias
 
 
 def init_wandb(
-    config: Config,
-    run_name: str,
-    model_name: str,
-    group: str = "model-comparison",
-    tags: Optional[List[str]] = None,
+    config,                        # any config dataclass
+    run_name   : str,
+    model_name : str,
+    group      : str               = "model-comparison",
+    tags       : Optional[List[str]] = None,
 ) -> Optional[object]:
-    """
-    Initialise a single W&B run for one model.
-    """
+    """Initialise a single W&B run for one model."""
     if not _WANDB_AVAILABLE:
         logger.warning("wandb not installed — skipping.")
         return None
 
-    if not config.use_wandb:
+    if not getattr(config, 'use_wandb', False):
         logger.info("W&B disabled in config.")
         return None
 
@@ -89,23 +82,23 @@ def init_wandb(
         authenticate()
 
         run_config: Dict[str, Any] = {
-            "model": model_name,
-            "top_k": config.top_k,
-            "seed": config.seed,
-            "device": config.device,
-            "n_gpus": config.n_gpus,
+            "model"  : model_name,
+            "top_k"  : getattr(config, 'top_k',  3),
+            "seed"   : getattr(config, 'seed',    42),
+            "device" : getattr(config, 'device',  "cpu"),
+            "n_gpus" : getattr(config, 'n_gpus',  1),
             **{m: None for m in REQUIRED_METRICS},
         }
 
         run = wandb.init(
-            project=config.wandb_project,
-            entity=config.wandb_entity,
-            name=run_name,
-            config=run_config,
-            group=group,
-            job_type=model_name,
-            reinit=True,
-            tags=tags or [model_name],
+            project  = config.wandb_project,
+            entity   = getattr(config, 'wandb_entity', None) or None,
+            name     = run_name,
+            config   = run_config,
+            group    = group,
+            job_type = model_name,
+            reinit   = True,
+            tags     = tags or [model_name],
         )
 
         logger.info(f"W&B run | model={model_name} | url={run.url}")
@@ -121,19 +114,6 @@ def log_model_metrics(
     metrics: Dict[str, float],
     step   : Optional[int] = None,
 ) -> None:
-    """
-    Log metrics to a run. Warns if required comparison metrics are missing.
-
-    Usage
-    -----
-        log_model_metrics(run, {
-            "f1_score" : 0.87,
-            "accuracy" : 0.89,
-            "precision": 0.86,
-            "recall"   : 0.88,
-            "map_at_k" : 0.91,
-        })
-    """
     if run is None or not _WANDB_AVAILABLE:
         return
 
@@ -150,7 +130,6 @@ def log_model_metrics(
 
 
 def finish_run(run: Optional[object]) -> None:
-    """Finish a single W&B run."""
     if run is not None and _WANDB_AVAILABLE:
         run.finish()
         logger.info(f"W&B run '{run.name}' finished.")
