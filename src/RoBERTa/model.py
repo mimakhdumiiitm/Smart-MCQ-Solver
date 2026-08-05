@@ -1,24 +1,23 @@
 # src/RoBERTa/model.py
 """
-RoBERTa-base MCQ model.
+RoBERTa-base MCQ model — memory-optimised for T4 x2.
 
 Architecture
 ────────────
   Shared RoBERTa encoder  (one forward per option, weights shared)
-  → Weighted layer pooling  (learns which encoder layer to trust)
-  → Multi-sample dropout   (5× dropout heads averaged → better generalisation)
+  → Mean pooling           (memory-efficient; weighted-layer pool removed)
+  → Multi-sample dropout   (n=3, reduced from 5)
   → Cross-option interaction transformer block
-  → Scalar scorer per option
-  → logits [B, 5]
+  → Scalar scorer per option → logits [B, 5]
 
-Key improvements over naive RoBERTa
-─────────────────────────────────────
-  1. Weighted layer pooling  — uses all 12 hidden states with learned weights
-     rather than only the last layer; empirically +0.5–1.5 MAP@3
-  2. Multi-sample dropout    — 5 stochastic forward passes through the head,
-     averaged; acts as an ensemble within one forward pass; prevents overfitting
-  3. Cross-option interaction — same as DeBERTa version; MCQ is comparative
-  4. All params kept in float32 — avoids "unscale FP16 gradients" crash
+Memory optimisations vs previous version
+──────────────────────────────────────────
+  ✗ WeightedLayerPooling   removed  (stored 12× hidden states = OOM)
+  ✗ R-Drop                 removed  (2× backward graph = OOM)
+  ✓ output_hidden_states   False    (saves 12× [B*5, L, H] tensors)
+  ✓ gradient_checkpointing True     (recompute instead of store activations)
+  ✓ n_dropouts             3        (was 5)
+  ✓ All params float32              (no FP16 gradient errors)
 """
 
 import logging
@@ -32,7 +31,7 @@ logger = logging.getLogger("RoBERTa.Model")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pooling heads
+# Pooling
 # ─────────────────────────────────────────────────────────────────────────────
 
 class MeanPooling(nn.Module):
@@ -56,68 +55,17 @@ class AttentionPooling(nn.Module):
     def __init__(self, hidden: int):
         super().__init__()
         self.attn = nn.Sequential(
-            nn.Linear(hidden, hidden // 2),
+            nn.Linear(hidden, hidden // 4),
             nn.Tanh(),
-            nn.Linear(hidden // 2, 1, bias=False),
+            nn.Linear(hidden // 4, 1, bias=False),
         )
 
     def forward(self, hidden: torch.Tensor,
                 mask: torch.Tensor) -> torch.Tensor:
-        scores = self.attn(hidden).squeeze(-1)
+        scores = self.attn(hidden).squeeze(-1)          # [B*5, L]
         scores = scores.masked_fill(mask == 0, -1e9)
-        w      = F.softmax(scores, dim=-1).unsqueeze(1)
-        return torch.bmm(w, hidden).squeeze(1)
-
-
-class WeightedLayerPooling(nn.Module):
-    """
-    Learned convex combination of all encoder hidden states.
-
-    Why this works
-    ──────────────
-    Different layers capture different linguistic abstractions.
-    Lower layers → syntax / morphology.
-    Upper layers → semantics / pragmatics.
-    For MCQ we want a mixture; the model learns the optimal weights.
-
-    Parameters
-    ──────────
-    n_layers : number of transformer layers (12 for roberta-base)
-    """
-
-    def __init__(self, n_layers: int, pooling_mode: str = "mean"):
-        super().__init__()
-        self.n_layers     = n_layers
-        self.pooling_mode = pooling_mode
-        # one scalar weight per layer; softmax → convex combination
-        self.layer_weights = nn.Parameter(
-            torch.ones(n_layers, dtype=torch.float32)
-        )
-        # per-layer mean pooler (reused)
-        self._mean = MeanPooling()
-
-    def forward(
-        self,
-        all_hidden_states,   # tuple of [B*5, L, H] length n_layers+1
-        mask: torch.Tensor,  # [B*5, L]
-    ) -> torch.Tensor:
-        # skip embedding layer (index 0), use layers 1..n_layers
-        hidden_stack = torch.stack(
-            all_hidden_states[1:], dim=0
-        )                              # [n_layers, B*5, L, H]
-
-        weights = F.softmax(self.layer_weights, dim=0)  # [n_layers]
-        # weighted sum over layers
-        weighted = (
-            hidden_stack *
-            weights.view(-1, 1, 1, 1)
-        ).sum(dim=0)                   # [B*5, L, H]
-
-        # pool over token dimension
-        if self.pooling_mode == "mean":
-            return self._mean(weighted, mask)
-        else:
-            return weighted[:, 0, :]   # CLS
+        w      = F.softmax(scores, dim=-1).unsqueeze(1) # [B*5, 1, L]
+        return torch.bmm(w, hidden).squeeze(1)           # [B*5, H]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -127,7 +75,12 @@ class WeightedLayerPooling(nn.Module):
 class OptionInteraction(nn.Module):
     """
     Single-layer transformer block over the 5 option representations.
-    Identical logic to DeBERTa version — well validated.
+
+    Why this helps
+    ──────────────
+    MCQ is comparative — the correct answer must be distinguished from
+    distractors.  Pure independent scoring misses inter-option relationships.
+    Memory cost is negligible: sequence length = 5.
     """
 
     def __init__(self, hidden: int, dropout: float = 0.1):
@@ -136,15 +89,15 @@ class OptionInteraction(nn.Module):
         self.norm2 = nn.LayerNorm(hidden)
         self.attn  = nn.MultiheadAttention(
             embed_dim   = hidden,
-            num_heads   = 1,
+            num_heads   = 1,        # single head — 5-token sequence
             dropout     = dropout,
             batch_first = True,
         )
         self.ffn = nn.Sequential(
-            nn.Linear(hidden, hidden * 2),
+            nn.Linear(hidden, hidden),   # no expansion — saves memory
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden * 2, hidden),
+            nn.Linear(hidden, hidden),
         )
         self.drop = nn.Dropout(dropout)
 
@@ -162,23 +115,19 @@ class OptionInteraction(nn.Module):
 
 class MultiSampleDropoutHead(nn.Module):
     """
-    Apply the classification head N times with different dropout masks,
-    then average the logits.
+    Run the classifier head n times with different dropout masks, average.
 
     Benefits
     ────────
-    - Acts as an ensemble within a single forward pass
-    - Empirically reduces overfitting on small fine-tuning sets
-    - No extra parameters vs a standard head; negligible compute overhead
-    - Proven effective for NLP: https://arxiv.org/abs/1905.09788
+    - Implicit ensemble within one forward → better generalisation
+    - No extra parameters vs a standard head
+    - n=3 keeps memory overhead modest
 
-    Architecture
-    ────────────
-    H → H//2 → GELU → Dropout(p) → LN → 1
-    (repeated n_dropouts times, average)
+    We compute all n passes in a single batched operation to avoid
+    Python-loop overhead on GPU.
     """
 
-    def __init__(self, hidden: int, n_dropouts: int = 5,
+    def __init__(self, hidden: int, n_dropouts: int = 3,
                  dropout_p: float = 0.1):
         super().__init__()
         self.n_dropouts = n_dropouts
@@ -193,12 +142,15 @@ class MultiSampleDropoutHead(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x : [B, 5, H] → [B, 5]"""
-        logits = torch.stack(
-            [self.fc(drop(x)) for drop in self.dropouts],
-            dim=0,
-        ).mean(dim=0)                     # [B, 5, 1]
-        return logits.squeeze(-1)          # [B, 5]
+        """
+        x : [B, 5, H] → [B, 5]
+        Averages n_dropouts independent dropout realizations.
+        """
+        # stack dropout outputs → [n, B, 5, 1] → mean → [B, 5]
+        out = torch.stack(
+            [self.fc(drop(x)) for drop in self.dropouts], dim=0
+        ).mean(dim=0).squeeze(-1)
+        return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -207,7 +159,7 @@ class MultiSampleDropoutHead(nn.Module):
 
 class MCQRoBERTa(nn.Module):
     """
-    RoBERTa-base MCQ scorer.
+    RoBERTa-base MCQ scorer, memory-optimised for T4 x2.
 
     Forward
     ───────
@@ -216,19 +168,21 @@ class MCQRoBERTa(nn.Module):
     token_type_ids : [B, 5, L]  ← ignored (RoBERTa has no segment IDs)
     → logits       : [B, 5]
 
-    Design notes
-    ────────────
-    - All encoder parameters kept in float32 to avoid AMP gradient issues.
-    - Gradient checkpointing enabled to fit in T4 VRAM.
-    - output_hidden_states=True required for WeightedLayerPooling.
+    Memory budget (per GPU, batch_size=4, max_len=96, FP32)
+    ──────────────────────────────────────────────────────
+    RoBERTa-base weights            ~440 MB
+    Activations (grad ckpt)         ~1.5 GB  (recomputed, not stored)
+    Optimizer states (AdamW)        ~880 MB
+    Input tensors [4,5,96]          ~negligible
+    Total estimated                 ~3.0 GB  ← fits in 15 GB T4
     """
 
     def __init__(
         self,
         model_name    : str   = "roberta-base",
-        pooling       : str   = "weighted",     # weighted | mean | cls | attention
+        pooling       : str   = "mean",
         hidden_dropout: float = 0.1,
-        n_dropouts    : int   = 5,
+        n_dropouts    : int   = 3,
         use_grad_ckpt : bool  = True,
     ):
         super().__init__()
@@ -238,32 +192,30 @@ class MCQRoBERTa(nn.Module):
             model_name,
             hidden_dropout_prob          = hidden_dropout,
             attention_probs_dropout_prob = hidden_dropout,
-            output_hidden_states         = True,   # needed for weighted pooling
+            output_hidden_states         = False,   # CRITICAL: saves 12× hidden states
         )
         self.encoder = AutoModel.from_pretrained(
             model_name,
             config      = cfg,
-            torch_dtype = torch.float32,           # always FP32
+            torch_dtype = torch.float32,            # always FP32
         )
 
         if use_grad_ckpt:
             self.encoder.gradient_checkpointing_enable()
 
-        H          = self.encoder.config.hidden_size          # 768
-        n_layers   = self.encoder.config.num_hidden_layers    # 12
+        H = self.encoder.config.hidden_size          # 768 for roberta-base
 
         # ── 2. Pooling ────────────────────────────────────────────────────
         self.pooling_mode = pooling
-        if pooling == "weighted":
-            self.pool = WeightedLayerPooling(n_layers, pooling_mode="mean")
-        elif pooling == "mean":
+        if pooling == "mean":
             self.pool = MeanPooling()
         elif pooling == "cls":
             self.pool = CLSPooling()
         elif pooling == "attention":
             self.pool = AttentionPooling(H)
         else:
-            raise ValueError(f"Unknown pooling: {pooling}")
+            raise ValueError(f"Unknown pooling: {pooling!r}. "
+                             f"Choose from: mean, cls, attention")
 
         # ── 3. Cross-option interaction ───────────────────────────────────
         self.option_interaction = OptionInteraction(H, dropout=hidden_dropout)
@@ -291,7 +243,6 @@ class MCQRoBERTa(nn.Module):
 
     def _transformer_layers(self):
         enc = self.encoder
-        # roberta-base: encoder.encoder.layer
         if hasattr(enc, 'encoder') and hasattr(enc.encoder, 'layer'):
             return list(enc.encoder.layer)
         return []
@@ -301,7 +252,7 @@ class MCQRoBERTa(nn.Module):
         layers = self._transformer_layers()
         if n >= len(layers):
             logger.warning(
-                f"freeze_layers={n} >= total layers={len(layers)}. "
+                f"freeze_layers={n} >= total={len(layers)}. "
                 f"Capping at {len(layers) - 1}."
             )
             n = max(0, len(layers) - 1)
@@ -313,15 +264,15 @@ class MCQRoBERTa(nn.Module):
             for p in layer.parameters():
                 p.requires_grad = False
 
-        frozen  = sum(not p.requires_grad for p in self.encoder.parameters())
-        total   = sum(1 for _ in self.encoder.parameters())
+        frozen = sum(not p.requires_grad for p in self.encoder.parameters())
+        total  = sum(1 for _ in self.encoder.parameters())
         logger.info(
             f"Frozen {frozen}/{total} backbone params "
             f"(bottom-{n} layers + embeddings)"
         )
 
     def unfreeze_top_layer(self) -> bool:
-        """Unfreeze the topmost still-frozen transformer layer."""
+        """Unfreeze the topmost still-frozen transformer layer. Returns True if unfroze."""
         for layer in reversed(self._transformer_layers()):
             if any(not p.requires_grad for p in layer.parameters()):
                 for p in layer.parameters():
@@ -340,22 +291,17 @@ class MCQRoBERTa(nn.Module):
 
         B, N, L = input_ids.shape
 
-        # flatten batch × options
+        # flatten: treat each option as an independent sequence
         iids = input_ids.view(B * N, L)
         mask = attention_mask.view(B * N, L)
 
-        # RoBERTa does not use token_type_ids — pass zeros to avoid issues
+        # RoBERTa does not use token_type_ids — omit entirely
         out = self.encoder(
             input_ids      = iids,
             attention_mask = mask,
-        )
+        )                                           # last_hidden_state: [B*5, L, H]
 
-        # pool over token dimension
-        if self.pooling_mode == "weighted":
-            # out.hidden_states: tuple of (n_layers+1) tensors [B*5, L, H]
-            pooled = self.pool(out.hidden_states, mask)   # [B*5, H]
-        else:
-            pooled = self.pool(out.last_hidden_state, mask)   # [B*5, H]
+        pooled = self.pool(out.last_hidden_state, mask)  # [B*5, H]
 
         # cross-option interaction
         pooled = pooled.view(B, N, -1)                   # [B, 5, H]

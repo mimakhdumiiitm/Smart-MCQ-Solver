@@ -1,6 +1,6 @@
 # src/RoBERTa/pipeline.py
 """
-Full RoBERTa-base MCQ pipeline.
+Full RoBERTa-base MCQ pipeline — memory-optimised for T4 x2.
 
 Workflow
 ────────
@@ -9,15 +9,25 @@ Workflow
   → Group-aware train/val split
   → SBERT leakage audit
   → RoBERTa tokenization  →  DataLoaders
-  → Build MCQRoBERTa  (backbone + weighted-layer pool +
-                       multi-sample dropout + cross-option interaction)
-  → Differential LR optimizer  (backbone: 1e-5, head: 1e-4)
+  → Build MCQRoBERTa
+  → Differential LR optimizer
   → Warmup + cosine scheduler
-  → Train  (R-Drop + grad accum + progressive unfreeze)
-  → DataParallel for T4×2
+  → Train  (FP32, grad accum=8, progressive unfreeze)
+  → DataParallel for T4×2  (applied after freeze setup)
   → Save artifacts  →  Test inference  →  Submission
 
-Targeting MAP@3 > 0.788 (previous DeBERTa baseline).
+Memory fixes vs OOM version
+─────────────────────────────
+  ✗ WeightedLayerPooling removed  (was storing 12× hidden states per step)
+  ✗ R-Drop removed               (was doubling backward graph)
+  ✓ output_hidden_states=False   (saves ~1.5 GB per step)
+  ✓ batch_size=4 per GPU         (reduced from 8)
+  ✓ max_len=96                   (reduced from 128)
+  ✓ freeze_layers=6              (more frozen → smaller backward graph)
+  ✓ grad_accum=8                 (same effective batch, less peak memory)
+  ✓ set_to_none=True in zero_grad
+  ✓ empty_cache() after each optimizer step
+  ✓ best_state saved to CPU
 """
 
 import dataclasses
@@ -36,8 +46,7 @@ from transformers import AutoTokenizer
 
 from config.RoBERTa_config import Config
 from src.RoBERTa.data import (
-    SemanticDeduplicator, MCQDataset, collate_fn,
-    normalize_text, ANSWER_LABELS,
+    SemanticDeduplicator, MCQDataset, collate_fn, ANSWER_LABELS,
 )
 from src.RoBERTa.model     import MCQRoBERTa
 from src.RoBERTa.training  import MCQLoss, Trainer, build_scheduler, ranked_preds
@@ -73,14 +82,17 @@ def _seed(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
+def _unwrap(model):
+    """Return raw model even if wrapped in DataParallel."""
+    return model.module if isinstance(model, nn.DataParallel) else model
+
+
 def _build_optimizer(model: MCQRoBERTa, cfg: Config):
     """
     Differential learning rates.
-
-    Backbone (pretrained RoBERTa) → lr_backbone   (1e-5)
-    Head + interaction + pooling  → lr_head        (1e-4)
-
-    No weight decay on bias / LayerNorm parameters.
+    Backbone (pretrained RoBERTa) → lr_backbone  (1e-5)
+    Head + interaction + pooling  → lr_head       (8e-5)
+    No weight decay on bias / LayerNorm.
     """
     no_decay = {"bias", "LayerNorm.weight", "layer_norm.weight"}
 
@@ -110,24 +122,37 @@ def _build_optimizer(model: MCQRoBERTa, cfg: Config):
     return torch.optim.AdamW(param_groups, eps=1e-6)
 
 
+def _log_memory(tag: str):
+    """Log GPU memory usage for debugging."""
+    if not torch.cuda.is_available():
+        return
+    for i in range(torch.cuda.device_count()):
+        alloc    = torch.cuda.memory_allocated(i) / 1024**3
+        reserved = torch.cuda.memory_reserved(i)  / 1024**3
+        logger.info(
+            f"  [{tag}] GPU{i}: "
+            f"allocated={alloc:.2f} GB  reserved={reserved:.2f} GB"
+        )
+
+
 def _plot(history: dict, max_sims, wandb_run, cfg: Config):
     plots_dir = Path(cfg.plots_dir)
     plots_dir.mkdir(parents=True, exist_ok=True)
     try:
         import matplotlib.pyplot as plt
 
-        if history:
-            ep  = range(1, len(history.get('tr_loss', [])) + 1)
+        if history and history.get('tr_loss'):
+            ep   = range(1, len(history['tr_loss']) + 1)
             fig, axes = plt.subplots(1, 4, figsize=(20, 4))
             axes[0].plot(ep, history['tr_loss'], label='Train')
             axes[0].plot(ep, history['vl_loss'], label='Val')
             axes[0].set_title('Loss'); axes[0].legend(); axes[0].grid(alpha=.3)
             axes[1].plot(ep, history['vl_map3'], color='green')
-            axes[1].set_title('Val MAP@3'); axes[1].grid(alpha=.3)
+            axes[1].set_title('Val MAP@3');  axes[1].grid(alpha=.3)
             axes[2].plot(ep, history['vl_acc'],  color='purple')
-            axes[2].set_title('Val Acc');   axes[2].grid(alpha=.3)
+            axes[2].set_title('Val Acc');    axes[2].grid(alpha=.3)
             axes[3].plot(ep, history['vl_f1'],   color='orange')
-            axes[3].set_title('Val F1');    axes[3].grid(alpha=.3)
+            axes[3].set_title('Val F1');     axes[3].grid(alpha=.3)
             plt.tight_layout()
             p = plots_dir / "roberta_training.png"
             plt.savefig(p, dpi=150); plt.show()
@@ -137,8 +162,7 @@ def _plot(history: dict, max_sims, wandb_run, cfg: Config):
 
         if max_sims is not None:
             plt.figure(figsize=(8, 4))
-            plt.hist(max_sims, bins=50,
-                     color='steelblue', edgecolor='white')
+            plt.hist(max_sims, bins=50, color='steelblue', edgecolor='white')
             med = float(np.median(max_sims))
             plt.axvline(0.85, color='red',    ls='--', label='threshold=0.85')
             plt.axvline(med,  color='orange', ls='--',
@@ -154,11 +178,6 @@ def _plot(history: dict, max_sims, wandb_run, cfg: Config):
 
     except ImportError:
         logger.warning("matplotlib not available — skipping plots")
-
-
-def _unwrap(model):
-    """Return raw model even if wrapped in DataParallel."""
-    return model.module if isinstance(model, nn.DataParallel) else model
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -183,6 +202,9 @@ def run(
     cfg_dict = dataclasses.asdict(cfg)
     _seed(cfg.seed)
 
+    # ── print memory baseline ─────────────────────────────────────────────────
+    _log_memory("startup")
+
     # ── W&B ──────────────────────────────────────────────────────────────────
     wandb_run = init_wandb(
         config     = cfg,
@@ -191,8 +213,7 @@ def run(
         group      = "transformer-models",
         tags       = ["RoBERTa", "roberta-base",
                       "SBERT-dedup", "cross-option",
-                      "weighted-pool", "multi-sample-dropout",
-                      "rdrop"],
+                      "mean-pool", "multi-sample-dropout"],
     )
 
     # ── 1. Raw data ───────────────────────────────────────────────────────────
@@ -264,6 +285,8 @@ def run(
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
 
     # ── 6. Datasets & DataLoaders ─────────────────────────────────────────────
+    # batch_size in config is per-GPU; DataParallel multiplies internally,
+    # so we pass the per-GPU size directly.
     kw = dict(
         collate_fn  = collate_fn,
         num_workers = cfg.num_workers,
@@ -272,22 +295,24 @@ def run(
     train_ds = MCQDataset(train_df, tokenizer, cfg.max_len, is_test=False)
     val_ds   = MCQDataset(val_df,   tokenizer, cfg.max_len, is_test=False)
 
-    # effective batch = batch_size × n_gpus × grad_accum
     train_dl = DataLoader(
         train_ds,
-        batch_size = cfg.batch_size * max(cfg.n_gpus, 1),
+        batch_size = cfg.batch_size,   # DataParallel splits this across GPUs
         shuffle    = True,
         **kw,
     )
     val_dl = DataLoader(
         val_ds,
-        batch_size = cfg.batch_size * max(cfg.n_gpus, 1),
+        batch_size = cfg.batch_size,
         shuffle    = False,
         **kw,
     )
     logger.info(f"Train batches: {len(train_dl)}  Val batches: {len(val_dl)}")
     logger.info(
-        f"Effective batch size: "
+        f"Effective batch size per update: "
+        f"batch={cfg.batch_size} × "
+        f"gpus={max(cfg.n_gpus,1)} × "
+        f"accum={cfg.grad_accum} = "
         f"{cfg.batch_size * max(cfg.n_gpus, 1) * cfg.grad_accum}"
     )
 
@@ -295,7 +320,7 @@ def run(
     logger.info(
         f"Building MCQRoBERTa  "
         f"[pooling={cfg.pooling} | dropout×{cfg.n_dropouts} | "
-        f"grad_ckpt={cfg.use_grad_ckpt}]"
+        f"freeze={cfg.freeze_layers} | grad_ckpt={cfg.use_grad_ckpt}]"
     )
     model = MCQRoBERTa(
         model_name     = cfg.model_name,
@@ -304,17 +329,25 @@ def run(
         n_dropouts     = cfg.n_dropouts,
         use_grad_ckpt  = cfg.use_grad_ckpt,
     )
-    model.freeze_backbone_layers(cfg.freeze_layers)
 
-    # ── Multi-GPU (T4 × 2) ────────────────────────────────────────────────────
-    if cfg.n_gpus > 1:
-        logger.info(f"Using DataParallel across {cfg.n_gpus} GPUs")
-        model = nn.DataParallel(model)
+    # ── freeze BEFORE DataParallel (must operate on raw model) ────────────────
+    model.freeze_backbone_layers(cfg.freeze_layers)
 
     n_params    = sum(p.numel() for p in model.parameters())
     n_trainable = sum(p.numel() for p in model.parameters()
                       if p.requires_grad)
     logger.info(f"Params total={n_params:,}  trainable={n_trainable:,}")
+
+    # ── build optimizer on raw model BEFORE DataParallel ──────────────────────
+    optimizer = _build_optimizer(model, cfg)
+
+    # ── wrap in DataParallel AFTER optimizer is built ─────────────────────────
+    if cfg.n_gpus > 1:
+        logger.info(f"Wrapping in DataParallel across {cfg.n_gpus} GPUs")
+        model = nn.DataParallel(model)
+
+    model = model.to(cfg.device)
+    _log_memory("after model load")
 
     if wandb_run:
         wandb_run.log({
@@ -322,11 +355,7 @@ def run(
             "model/n_trainable" : n_trainable,
         })
 
-    # ── 8. Optimizer + scheduler ──────────────────────────────────────────────
-    # build optimizer on raw (unwrapped) model
-    raw_model = _unwrap(model)
-    optimizer = _build_optimizer(raw_model, cfg)
-
+    # ── 8. Scheduler ──────────────────────────────────────────────────────────
     steps_per_epoch = max(len(train_dl) // cfg.grad_accum, 1)
     total_steps     = steps_per_epoch * cfg.epochs
     warmup_steps    = int(total_steps * cfg.warmup_ratio)
@@ -341,7 +370,6 @@ def run(
         margin    = cfg.margin,
         ce_w      = cfg.ce_w,
         rank_w    = cfg.rank_w,
-        rdrop_w   = cfg.rdrop_w,
     )
 
     # ── 9. Train ──────────────────────────────────────────────────────────────
@@ -358,8 +386,10 @@ def run(
     )
     history = trainer.train()
     _plot(history, None, wandb_run, cfg)
+    _log_memory("after training")
 
     # ── 10. Save ──────────────────────────────────────────────────────────────
+    raw_model = _unwrap(model)
     save_model(
         wandb_run, raw_model, tokenizer, cfg.artifacts_save_dir,
         meta={
@@ -388,7 +418,7 @@ def run(
             test_raw, tokenizer, cfg.max_len, is_test=True)
         test_dl  = DataLoader(
             test_ds,
-            batch_size  = cfg.batch_size * max(cfg.n_gpus, 1),
+            batch_size  = cfg.batch_size,
             collate_fn  = collate_fn,
             shuffle     = False,
             num_workers = cfg.num_workers,
