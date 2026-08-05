@@ -16,17 +16,17 @@ class Config:
     pooling         : str   = "mean"          # mean is fast & low-memory
     hidden_dropout  : float = 0.1
     use_grad_ckpt   : bool  = True            # critical for T4 memory
-    freeze_layers   : int   = 6               # freeze bottom 6/12 layers
+    freeze_layers   : int   = 2               # freeze bottom 6/12 layers
     unfreeze_epoch  : int   = 2               # unfreeze 1 layer/epoch from ep2
 
     # ── SBERT ─────────────────────────────────────────────────────────────────
     sbert_model      : str   = "sentence-transformers/all-MiniLM-L6-v2"
     sbert_batch_size : int   = 256
-    sim_threshold    : float = 0.85
+    sim_threshold    : float = 0.98
 
     # ── Data ──────────────────────────────────────────────────────────────────
     max_len          : int   = 96             # 96 >> 128: 25% less memory
-    val_size         : float = 0.12
+    val_size         : float = 0.20
     seed             : int   = 42
     num_workers      : int   = 2
 
@@ -38,16 +38,16 @@ class Config:
     max_grad_norm    : float = 1.0
 
     # ── LR ────────────────────────────────────────────────────────────────────
-    lr_backbone      : float = 1.5e-5        # slightly higher → faster convergence
-    lr_head          : float = 8e-5
+    lr_backbone      : float = 1e-5      # slightly higher → faster convergence
+    lr_head          : float = 5e-5
     weight_decay     : float = 0.01
-    warmup_ratio     : float = 0.08
+    warmup_ratio     : float = 0.12
 
     # ── Loss ──────────────────────────────────────────────────────────────────
     smoothing        : float = 0.05
     margin           : float = 0.3
-    ce_w             : float = 0.65
-    rank_w           : float = 0.35
+    ce_w             : float = 0.80
+    rank_w           : float = 0.20
 
     # ── Early stopping ────────────────────────────────────────────────────────
     early_stop_patience : int = 4

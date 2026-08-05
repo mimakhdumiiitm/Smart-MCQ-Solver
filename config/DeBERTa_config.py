@@ -9,7 +9,7 @@ class Config:
     # ── Dedup / Audit (SBERT) ─────────────────────────────────────────────────
     sbert_model       : str   = "sentence-transformers/all-MiniLM-L6-v2"
     sbert_batch_size  : int   = 256          # large batch → fast encoding
-    sim_threshold     : float = 0.92        
+    sim_threshold     : float = 0.98        
     audit_top_k       : int   = 20
 
     # ── MCQ Model (DeBERTa) ───────────────────────────────────────────────────
