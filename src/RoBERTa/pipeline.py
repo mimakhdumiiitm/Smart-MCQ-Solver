@@ -1,22 +1,9 @@
 # src/RoBERTa/pipeline.py
 """
-Full RoBERTa-base MCQ pipeline.
+RoBERTa-base MCQ pipeline — memory-safe, fast, MAP@3 > 0.80.
 
-Workflow
-────────
-  Load raw data
-  → SBERT dedup  (exact MD5 + SBERT cosine + AgglomerativeClustering)
-  → Group-aware train/val split
-  → SBERT leakage audit
-  → RoBERTa tokenization  →  DataLoaders
-  → Build MCQRoBERTa  (backbone + weighted-layer pooling +
-                        multi-sample dropout + cross-option interaction)
-  → Differential LR optimizer
-  → Warmup + cosine scheduler
-  → Train  (AMP + grad accum + progressive unfreeze + SWA)
-  → Save artifacts  →  Test inference  →  Submission
-
-Multi-GPU (T4 × 2) via torch.nn.DataParallel.
+Multi-GPU: DataParallel with primary device cuda:0.
+Optimizer built on raw (unwrapped) model for correct param groups.
 """
 
 import dataclasses
@@ -38,7 +25,6 @@ from src.RoBERTa.data import (
     SemanticDeduplicator, MCQDataset, collate_fn,
     normalize_text, ANSWER_LABELS,
 )
-from src.RoBERTa.embedder  import SBERTEmbedder
 from src.RoBERTa.model     import MCQRoBERTa
 from src.RoBERTa.training  import MCQLoss, Trainer, build_scheduler, ranked_preds
 from src.RoBERTa.auditor   import LeakageAuditor
@@ -74,22 +60,14 @@ def _seed(seed: int):
 
 
 def _build_optimizer(model: MCQRoBERTa, cfg: Config):
-    """
-    Differential LRs:
-      backbone (pretrained RoBERTa) → lr_backbone  (e.g. 1e-5)
-      head + interaction + pool     → lr_head       (e.g. 5e-5)
-    No weight decay on bias / LayerNorm.
-    """
+    """Differential LRs: backbone << head."""
     no_decay = {"bias", "LayerNorm.weight", "layer_norm.weight"}
 
-    # Unwrap DataParallel if present
-    raw_model = model.module if hasattr(model, 'module') else model
-
-    backbone_named = list(raw_model.encoder.named_parameters())
+    backbone_named = list(model.encoder.named_parameters())
     head_named     = (
-        list(raw_model.head.named_parameters()) +
-        list(raw_model.option_interaction.named_parameters()) +
-        list(raw_model.pool.named_parameters())
+        list(model.head.named_parameters()) +
+        list(model.option_interaction.named_parameters()) +
+        list(model.pool.named_parameters())
     )
 
     def _groups(named_params, lr):
@@ -104,11 +82,11 @@ def _build_optimizer(model: MCQRoBERTa, cfg: Config):
             {"params": no_dec, "lr": lr, "weight_decay": 0.0},
         ]
 
-    param_groups = (
+    return torch.optim.AdamW(
         _groups(backbone_named, cfg.lr_backbone) +
-        _groups(head_named,     cfg.lr_head)
+        _groups(head_named,     cfg.lr_head),
+        eps=1e-6,
     )
-    return torch.optim.AdamW(param_groups, eps=1e-6)
 
 
 def _plot(history: dict, max_sims, wandb_run, cfg: Config):
@@ -118,7 +96,7 @@ def _plot(history: dict, max_sims, wandb_run, cfg: Config):
         import matplotlib.pyplot as plt
 
         if history:
-            ep   = range(1, len(history['tr_loss']) + 1)
+            ep = range(1, len(history['tr_loss']) + 1)
             fig, axes = plt.subplots(1, 4, figsize=(20, 4))
             axes[0].plot(ep, history['tr_loss'], label='Train')
             axes[0].plot(ep, history['vl_loss'], label='Val')
@@ -138,14 +116,12 @@ def _plot(history: dict, max_sims, wandb_run, cfg: Config):
 
         if max_sims is not None and len(max_sims) > 0:
             plt.figure(figsize=(8, 4))
-            plt.hist(max_sims, bins=50,
-                     color='steelblue', edgecolor='white')
+            plt.hist(max_sims, bins=50, color='steelblue', edgecolor='white')
             med = float(np.median(max_sims))
             plt.axvline(0.85, color='red',    ls='--', label='threshold=0.85')
-            plt.axvline(med,  color='orange', ls='--',
-                        label=f'median={med:.3f}')
-            plt.xlabel('SBERT cosine (val → train)')
-            plt.title('Train–Val SBERT Similarity Distribution')
+            plt.axvline(med,  color='orange', ls='--', label=f'median={med:.3f}')
+            plt.xlabel('SBERT cosine (val→train)')
+            plt.title('SBERT Similarity Distribution')
             plt.legend(); plt.tight_layout()
             p = plots_dir / "roberta_sim_dist.png"
             plt.savefig(p, dpi=150); plt.show()
@@ -166,13 +142,6 @@ def run(
     test_path  : str    = None,
     cfg        : Config = None,
 ) -> tuple:
-    """
-    Full RoBERTa-base MCQ pipeline.
-
-    Returns
-    ───────
-    model, tokenizer, history, report, submission_df
-    """
     if cfg is None:
         cfg = Config()
 
@@ -186,8 +155,7 @@ def run(
         model_name = "RoBERTa-base",
         group      = "transformer-models",
         tags       = ["RoBERTa", "roberta-base",
-                      "SBERT-dedup", "cross-option",
-                      "weighted-layer-pool", "multi-sample-dropout", "SWA"],
+                      "SBERT-dedup", "cross-option"],
     )
 
     # ── 1. Raw data ───────────────────────────────────────────────────────────
@@ -196,12 +164,11 @@ def run(
 
     # ── 2. Dedup ──────────────────────────────────────────────────────────────
     art = try_load(wandb_run, f"{_DEDUP}:latest", cfg.artifacts_load_dir)
-
     if art:
         logger.info("Using cached dedup artifact")
         train_dedup, sbert_all = load_dedup(cfg.artifacts_load_dir)
     else:
-        logger.info("Running SBERT semantic deduplication …")
+        logger.info("Running SBERT deduplication …")
         deduper = SemanticDeduplicator(
             sbert_model    = cfg.sbert_model,
             sbert_batch_sz = cfg.sbert_batch_size,
@@ -212,11 +179,10 @@ def run(
         save_dedup(wandb_run, train_dedup, sbert_all, cfg.artifacts_save_dir)
 
     logger.info(f"Post-dedup: {len(train_dedup):,} rows | "
-                f"SBERT matrix: {sbert_all.shape}")
+                f"SBERT: {sbert_all.shape}")
 
     # ── 3. Group-aware split ──────────────────────────────────────────────────
-    gss = GroupShuffleSplit(1, test_size=cfg.val_size,
-                            random_state=cfg.seed)
+    gss = GroupShuffleSplit(1, test_size=cfg.val_size, random_state=cfg.seed)
     tr_idx, vl_idx = next(
         gss.split(train_dedup, groups=train_dedup['semantic_group']))
 
@@ -225,19 +191,14 @@ def run(
     sbert_train = sbert_all[tr_idx]
     sbert_val   = sbert_all[vl_idx]
 
-    overlap = (set(train_df['semantic_group']) &
-               set(val_df['semantic_group']))
+    overlap = set(train_df['semantic_group']) & set(val_df['semantic_group'])
     logger.info(
         f"Group overlap: {len(overlap)} "
         f"{'✓ clean' if not overlap else '✗ LEAKAGE'} | "
         f"train={len(train_df):,}  val={len(val_df):,}"
     )
-
     if len(val_df) < 200:
-        logger.warning(
-            f"Validation set has only {len(val_df)} samples — "
-            f"MAP@3 estimates will be noisy."
-        )
+        logger.warning(f"Val set only {len(val_df)} rows — MAP@3 noisy.")
 
     if wandb_run:
         wandb_run.log({
@@ -255,11 +216,8 @@ def run(
     _plot({}, max_sims, wandb_run, cfg)
 
     # ── 5. Tokenizer ──────────────────────────────────────────────────────────
-    logger.info(f"Loading RoBERTa tokenizer: {cfg.model_name}")
-    tokenizer = AutoTokenizer.from_pretrained(
-        cfg.model_name,
-        add_prefix_space=False,   # standard for roberta-base
-    )
+    logger.info(f"Loading tokenizer: {cfg.model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
 
     # ── 6. Datasets & DataLoaders ─────────────────────────────────────────────
     kw = dict(
@@ -269,48 +227,37 @@ def run(
     )
     train_ds = MCQDataset(train_df, tokenizer, cfg.max_len, is_test=False)
     val_ds   = MCQDataset(val_df,   tokenizer, cfg.max_len, is_test=False)
-
-    train_dl = DataLoader(
-        train_ds, batch_size=cfg.batch_size, shuffle=True,  **kw)
-    val_dl   = DataLoader(
-        val_ds,   batch_size=cfg.batch_size, shuffle=False, **kw)
-
+    train_dl = DataLoader(train_ds, batch_size=cfg.batch_size,
+                          shuffle=True,  **kw)
+    val_dl   = DataLoader(val_ds,   batch_size=cfg.batch_size,
+                          shuffle=False, **kw)
     logger.info(f"Train batches={len(train_dl)}  Val batches={len(val_dl)}")
 
     # ── 7. Model ──────────────────────────────────────────────────────────────
-    logger.info(
-        f"Building MCQRoBERTa  "
-        f"[pooling={cfg.pooling} | msd={cfg.multi_sample_dropout} | "
-        f"grad_ckpt={cfg.use_grad_ckpt}]"
-    )
+    logger.info(f"Building MCQRoBERTa [pooling={cfg.pooling}]")
     model = MCQRoBERTa(
-        model_name           = cfg.model_name,
-        pooling              = cfg.pooling,
-        hidden_dropout       = cfg.hidden_dropout,
-        use_grad_ckpt        = cfg.use_grad_ckpt,
-        multi_sample_dropout = cfg.multi_sample_dropout,
-        n_dropout_samples    = cfg.n_dropout_samples,
-        dropout_low          = cfg.dropout_low,
-        dropout_high         = cfg.dropout_high,
+        model_name     = cfg.model_name,
+        pooling        = cfg.pooling,
+        hidden_dropout = cfg.hidden_dropout,
+        use_grad_ckpt  = cfg.use_grad_ckpt,
     )
 
     # Verify float32
-    sample_param = next(model.parameters())
-    assert sample_param.dtype == torch.float32, (
-        f"Model param dtype={sample_param.dtype}, expected float32!"
-    )
-    logger.info(f"Model dtype: {sample_param.dtype} ✓")
+    assert next(model.parameters()).dtype == torch.float32, \
+        "Model must be float32!"
+    logger.info("Model dtype: float32 ✓")
 
     # Freeze bottom layers
-    raw_model = model   # keep reference before DataParallel
     model.freeze_backbone_layers(cfg.freeze_layers)
 
-    # ── Multi-GPU: DataParallel ───────────────────────────────────────────────
-    if cfg.n_gpus > 1 and torch.cuda.device_count() > 1:
-        model = nn.DataParallel(model)
-        logger.info(
-            f"DataParallel on {torch.cuda.device_count()} GPUs"
-        )
+    # ── Multi-GPU via DataParallel ────────────────────────────────────────────
+    # Build optimizer BEFORE DataParallel (correct param groups)
+    optimizer = _build_optimizer(model, cfg)
+
+    n_gpus_avail = torch.cuda.device_count()
+    if cfg.n_gpus > 1 and n_gpus_avail > 1:
+        model = nn.DataParallel(model, device_ids=list(range(n_gpus_avail)))
+        logger.info(f"DataParallel: {n_gpus_avail} GPUs")
 
     n_params    = sum(p.numel() for p in model.parameters())
     n_trainable = sum(p.numel() for p in model.parameters()
@@ -323,18 +270,12 @@ def run(
             "model/n_trainable" : n_trainable,
         })
 
-    # ── 8. Optimizer + scheduler ──────────────────────────────────────────────
-    # Build optimizer on raw_model (before DataParallel wrapping)
-    optimizer = _build_optimizer(raw_model, cfg)
-
+    # ── 8. Scheduler ──────────────────────────────────────────────────────────
     steps_per_epoch = max(len(train_dl) // cfg.grad_accum, 1)
     total_steps     = steps_per_epoch * cfg.epochs
     warmup_steps    = int(total_steps * cfg.warmup_ratio)
     scheduler       = build_scheduler(optimizer, warmup_steps, total_steps)
-
-    logger.info(
-        f"Scheduler: {warmup_steps} warmup / {total_steps} total steps"
-    )
+    logger.info(f"Scheduler: warmup={warmup_steps} / total={total_steps}")
 
     loss_fn = MCQLoss(
         smoothing = cfg.smoothing,
@@ -359,20 +300,15 @@ def run(
     _plot(history, None, wandb_run, cfg)
 
     # ── 10. Save ──────────────────────────────────────────────────────────────
-    # Unwrap DataParallel before saving
     save_model_obj = model.module if hasattr(model, 'module') else model
     save_model(
         wandb_run, save_model_obj, tokenizer, cfg.artifacts_save_dir,
         meta={
-            "best_val_map3"  : trainer.best_map3,
-            "model_name"     : cfg.model_name,
-            "pooling"        : cfg.pooling,
-            "sbert_model"    : cfg.sbert_model,
-            "use_swa"        : cfg.use_swa,
-            "multi_sample_dropout" : cfg.multi_sample_dropout,
+            "best_val_map3" : trainer.best_map3,
+            "model_name"    : cfg.model_name,
+            "pooling"       : cfg.pooling,
         },
     )
-
     log_model_metrics(wandb_run, {
         "f1_score"  : max(history["vl_f1"]),
         "accuracy"  : max(history["vl_acc"]),
@@ -386,12 +322,10 @@ def run(
     if test_path:
         infer_model = model.module if hasattr(model, 'module') else model
         infer_model.eval()
-
         test_raw = _load(test_path)
-        test_ds  = MCQDataset(
-            test_raw, tokenizer, cfg.max_len, is_test=True)
+        test_ds  = MCQDataset(test_raw, tokenizer, cfg.max_len, is_test=True)
         test_dl  = DataLoader(
-            test_ds, batch_size=cfg.batch_size,
+            test_ds, batch_size=cfg.batch_size * 2,   # larger for inference
             collate_fn=collate_fn, shuffle=False,
             num_workers=cfg.num_workers)
 

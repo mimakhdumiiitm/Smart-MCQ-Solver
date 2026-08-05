@@ -1,7 +1,7 @@
 # config/RoBERTa_config.py
 """
-Configuration for RoBERTa-base MCQ pipeline.
-Tuned for T4 x2, MAP@3 > 0.788 target.
+RoBERTa-base MCQ config — memory-safe, fast, MAP@3 > 0.80 target.
+T4 x2, torch 2.10, CUDA 12.8
 """
 
 import dataclasses
@@ -13,55 +13,44 @@ from typing import Optional
 class Config:
     # ── Model ─────────────────────────────────────────────────────────────────
     model_name      : str   = "roberta-base"
-    pooling         : str   = "weighted_layer"   # weighted_layer | mean | cls | attention
+    pooling         : str   = "mean"          # mean is fast & low-memory
     hidden_dropout  : float = 0.1
-    use_grad_ckpt   : bool  = True
-    freeze_layers   : int   = 3                  # freeze bottom-N layers initially
-    unfreeze_epoch  : int   = 2                  # start unfreezing from this epoch
+    use_grad_ckpt   : bool  = True            # critical for T4 memory
+    freeze_layers   : int   = 6               # freeze bottom 6/12 layers
+    unfreeze_epoch  : int   = 2               # unfreeze 1 layer/epoch from ep2
 
-    # ── SBERT (dedup & audit) ─────────────────────────────────────────────────
-    sbert_model     : str   = "sentence-transformers/all-MiniLM-L6-v2"
-    sbert_batch_size: int   = 256
-    sim_threshold   : float = 0.85
+    # ── SBERT ─────────────────────────────────────────────────────────────────
+    sbert_model      : str   = "sentence-transformers/all-MiniLM-L6-v2"
+    sbert_batch_size : int   = 256
+    sim_threshold    : float = 0.85
 
     # ── Data ──────────────────────────────────────────────────────────────────
-    max_len         : int   = 128
-    val_size        : float = 0.12
-    seed            : int   = 42
-    num_workers     : int   = 2
+    max_len          : int   = 96             # 96 >> 128: 25% less memory
+    val_size         : float = 0.12
+    seed             : int   = 42
+    num_workers      : int   = 2
 
     # ── Training ──────────────────────────────────────────────────────────────
-    epochs          : int   = 12
-    batch_size      : int   = 8                  # per-GPU; effective = 8×2×4=64
-    grad_accum      : int   = 4
-    use_fp16        : bool  = True               # BF16-safe via float32 scaler
-    max_grad_norm   : float = 1.0
+    epochs           : int   = 10
+    batch_size       : int   = 4             # per step; eff=4×8=32
+    grad_accum       : int   = 8
+    use_fp16         : bool  = True
+    max_grad_norm    : float = 1.0
 
     # ── LR ────────────────────────────────────────────────────────────────────
-    lr_backbone     : float = 1e-5
-    lr_head         : float = 5e-5
-    weight_decay    : float = 0.01
-    warmup_ratio    : float = 0.10
+    lr_backbone      : float = 1.5e-5        # slightly higher → faster convergence
+    lr_head          : float = 8e-5
+    weight_decay     : float = 0.01
+    warmup_ratio     : float = 0.08
 
     # ── Loss ──────────────────────────────────────────────────────────────────
-    smoothing       : float = 0.05
-    margin          : float = 0.3
-    ce_w            : float = 0.65
-    rank_w          : float = 0.35
-
-    # ── Regularisation ────────────────────────────────────────────────────────
-    multi_sample_dropout: bool  = True
-    n_dropout_samples   : int   = 5
-    dropout_low         : float = 0.10
-    dropout_high        : float = 0.50
-
-    # ── SWA ───────────────────────────────────────────────────────────────────
-    use_swa         : bool  = True
-    swa_start_epoch : int   = 7                  # start SWA from this epoch
-    swa_lr          : float = 5e-6
+    smoothing        : float = 0.05
+    margin           : float = 0.3
+    ce_w             : float = 0.65
+    rank_w           : float = 0.35
 
     # ── Early stopping ────────────────────────────────────────────────────────
-    early_stop_patience : int = 5
+    early_stop_patience : int = 4
 
     # ── Paths ──────────────────────────────────────────────────────────────
     artifacts_save_dir : str = "/kaggle/working/artifact"
@@ -76,11 +65,9 @@ class Config:
     wandb_entity    : Optional[str] = None
 
     # ── Hardware ──────────────────────────────────────────────────────────────
-    top_k   : int  = 3
-    n_gpus  : int  = 2
+    top_k    : int  = 3
+    n_gpus   : int  = 2
+    device   : str  = "cuda" if torch.cuda.is_available() else "cpu"
 
     # ── Audit ─────────────────────────────────────────────────────────────────
     audit_top_k : int = 20
-
-    # ── Device (set at runtime) ───────────────────────────────────────────────
-    device  : str  = "cuda" if torch.cuda.is_available() else "cpu"
