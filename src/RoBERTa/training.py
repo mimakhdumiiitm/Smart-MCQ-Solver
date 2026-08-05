@@ -214,13 +214,6 @@ class Trainer:
         self._es_best       : float = -np.inf
         self._global_step   : int   = 0
 
-        # autocast context: active for FP16, identity context for FP32
-        self._autocast = (
-            autocast(device_type="cuda", enabled=True)
-            if self.use_fp16
-            else contextlib.nullcontext()
-        )
-
     # ── early stopping ────────────────────────────────────────────────────────
 
     def _early_stop(self, score: float, epoch: int) -> bool:
@@ -324,7 +317,7 @@ class Trainer:
             tids = batch["token_type_ids"].to(self.device)
             lbls = batch["label"].to(self.device)
 
-            with self._autocast():
+            with autocast(device_type="cuda", enabled=self.use_fp16):
                 logits = self.model(iids, mask, tids)
                 loss, ce, rank = self.loss_fn(logits, lbls)
                 loss = loss / self.grad_accum
@@ -369,7 +362,7 @@ class Trainer:
             tids = batch["token_type_ids"].to(self.device)
             lbls = batch["label"].to(self.device)
 
-            with self._autocast():
+            with autocast(device_type="cuda", enabled=self.use_fp16):
                 logits = self.model(iids, mask, tids)
                 loss, *_ = self.loss_fn(logits, lbls)
 
