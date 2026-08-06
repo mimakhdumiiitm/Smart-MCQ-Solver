@@ -207,6 +207,7 @@ class SemanticDeduplicator:
                 f"Dedup would remove {100 * n_removed / len(df):.1f}% of data. "
                 f"Consider raising sim_threshold."
             )
+        df.to_csv("/kaggle/working/artifact/train_with_semantic_groups.csv", index=False)
         return df, sbert_matrix
 
 

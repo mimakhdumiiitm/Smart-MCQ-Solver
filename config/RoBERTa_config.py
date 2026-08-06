@@ -17,7 +17,7 @@ class Config:
     hidden_dropout  : float = 0.1
     use_grad_ckpt   : bool  = True            # critical for T4 memory
     freeze_layers   : int   = 2               # freeze bottom 6/12 layers
-    unfreeze_epoch  : int   = 2               # unfreeze 1 layer/epoch from ep2
+    unfreeze_epoch  : int   = 2           #7     # unfreeze 1 layer/epoch from ep2
 
     # ── SBERT ─────────────────────────────────────────────────────────────────
     sbert_model      : str   = "sentence-transformers/all-MiniLM-L6-v2"
@@ -31,7 +31,7 @@ class Config:
     num_workers      : int   = 2
 
     # ── Training ──────────────────────────────────────────────────────────────
-    epochs           : int   = 10
+    epochs           : int   = 10 # 6
     batch_size       : int   = 4             # per step; eff=4×8=32
     grad_accum       : int   = 8
     use_fp16         : bool  = True
